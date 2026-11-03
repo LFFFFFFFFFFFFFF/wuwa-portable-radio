@@ -1,4 +1,5 @@
 [Keys]
+Info=F7
 Pause=F8
 Source=F9
 Next=F10
@@ -9,3 +10,9 @@ Source=NetEase
 ; Set Folder to a local music directory when Source=Local.
 Folder=
 Volume=50
+
+[HUD]
+Enabled=1
+ShowSeconds=6
+AlwaysVisible=0
+Margin=24

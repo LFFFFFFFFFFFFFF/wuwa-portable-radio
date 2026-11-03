@@ -61,7 +61,7 @@ sealed class ImportWindow:Form {
     readonly TextBox input=new TextBox();readonly ListView songs=new ListView();readonly Label status=new Label();readonly Button read=new Button(),save=new Button();
     readonly string output;ImportData data;
     public ImportWindow(string path) {
-        output=path;Text="鸣潮电台 · 导入网易云";ClientSize=new Size(690,420);Font=new Font("Microsoft YaHei UI",10);StartPosition=FormStartPosition.CenterScreen;MinimumSize=MaximumSize=Size;
+        output=path;Text="鸣潮 · 随身电台 / 网易云导入";ClientSize=new Size(690,420);Font=new Font("Microsoft YaHei UI",10);StartPosition=FormStartPosition.CenterScreen;MinimumSize=MaximumSize=Size;
         var label=new Label{Text="粘贴网易云歌曲或歌单分享链接",Left=20,Top=18,Width=620};Controls.Add(label);
         input.SetBounds(20,48,530,30);Controls.Add(input);read.Text="读取链接";read.SetBounds(560,46,110,34);Controls.Add(read);
         songs.SetBounds(20,96,650,240);songs.View=View.Details;songs.FullRowSelect=true;songs.Columns.Add("歌曲",365);songs.Columns.Add("音乐人",240);Controls.Add(songs);

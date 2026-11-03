@@ -29,13 +29,15 @@ try {
     $common=@('/nologo','/W4','/WX','/O2','/MT',('/I'+$src),('/I'+(Join-Path $mh 'include')))
     $objects=@('buffer.obj','hook.obj','trampoline.obj','hde64.obj')
     Run $cc @('/nologo','/W3','/O2','/MT','/c',(Join-Path $mh 'src\buffer.c'),(Join-Path $mh 'src\hook.c'),(Join-Path $mh 'src\trampoline.c'),(Join-Path $mh 'src\hde\hde64.c'))
-    Run $cc ($common+@('/EHsc','/std:c++20','/c',(Join-Path $src 'controls.cpp'),(Join-Path $src 'cloud.cpp')))
-    $libraries=@('/link','/DYNAMICBASE','/NXCOMPAT','user32.lib','mfplay.lib','mfplat.lib','mfuuid.lib','ole32.lib','windowsapp.lib','shell32.lib')
-    $bridge=@((Join-Path $src 'bridge.c'),'controls.obj','cloud.obj')+$objects
+    Run $cc ($common+@('/utf-8','/EHsc','/std:c++20','/c',(Join-Path $src 'controls.cpp'),(Join-Path $src 'cloud.cpp'),(Join-Path $src 'status.cpp')))
+    $libraries=@('/link','/DYNAMICBASE','/NXCOMPAT','user32.lib','mfplay.lib','mfplat.lib','mfuuid.lib','ole32.lib','windowsapp.lib','shell32.lib','normaliz.lib')
+    $bridge=@((Join-Path $src 'bridge.c'),'controls.obj','cloud.obj','status.obj')+$objects
     Run $cc ($common+@('/LD',(Join-Path $src 'plugin.c'))+$bridge+@('/Fe:PortableRadioNative-loadlate.asi')+$libraries)
     Run $csc @('/nologo','/target:winexe','/out:NetEaseImporter.exe','/r:System.Windows.Forms.dll','/r:System.Drawing.dll','/r:System.Net.Http.dll','/r:System.Web.Extensions.dll',(Join-Path $src 'Importer.cs'))
+    Run $csc @('/nologo','/target:winexe','/out:RadioHud.exe','/r:System.Windows.Forms.dll','/r:System.Drawing.dll',(Join-Path $src 'RadioHud.cs'))
+    foreach ($program in @('NetEaseImporter.exe','RadioHud.exe')) {
     $selfTest=[Diagnostics.Process]::new()
-    $selfTest.StartInfo=[Diagnostics.ProcessStartInfo]::new((Join-Path $out 'NetEaseImporter.exe'),'--self-test')
+    $selfTest.StartInfo=[Diagnostics.ProcessStartInfo]::new((Join-Path $out $program),'--self-test')
     $selfTest.StartInfo.UseShellExecute=$false
     $selfTest.StartInfo.CreateNoWindow=$true
     $selfTest.StartInfo.RedirectStandardOutput=$true
@@ -43,12 +45,17 @@ try {
     $selfTest.Start() | Out-Null
     $testOutput=$selfTest.StandardOutput.ReadToEndAsync()
     $testError=$selfTest.StandardError.ReadToEndAsync()
-    if (-not $selfTest.WaitForExit(30000)) { $selfTest.Kill();throw 'Importer self-test timed out.' }
+    if (-not $selfTest.WaitForExit(30000)) { $selfTest.Kill();throw ($program+' self-test timed out.') }
     $message=$testOutput.GetAwaiter().GetResult()
     $errorText=$testError.GetAwaiter().GetResult()
-    if ($selfTest.ExitCode -ne 0) { throw ('Importer self-tests failed: '+$errorText) }
+    if ($selfTest.ExitCode -ne 0) { throw ($program+' self-tests failed: '+$errorText) }
     Write-Output $message
+    $selfTest.Dispose()
+    }
     if ($WithTests) {
+        Run $cc ($common+@('/utf-8','/EHsc','/std:c++20',(Join-Path $tests 'track_info_lab.cpp'),'/Fe:track_info_lab.exe','/link','normaliz.lib'))
+        Run (Join-Path $out 'track_info_lab.exe') @()
+        Run $cc ($common+@('/utf-8','/EHsc','/std:c++20',(Join-Path $tests 'cloud_status_lab.cpp'),'cloud.obj','/Fe:cloud_status_lab.exe')+$libraries)
         Run $csc @('/nologo','/target:library','/optimize+','/out:Aki.Game.dll',(Join-Path $tests 'fixture.cs'))
         Run $csc @('/nologo','/target:exe','/out:FixtureIdentity.exe',(Join-Path $tests 'FixtureIdentity.cs'))
         Run (Join-Path $out 'FixtureIdentity.exe') @((Join-Path $out 'Aki.Game.dll'),(Join-Path $out 'fixture_identity.h'))
@@ -58,5 +65,5 @@ try {
         Run $cc ($testFlags+@('/DRADIO_LAB','/LD',(Join-Path $src 'plugin.c'))+$bridge+@('/Fe:PortableRadioTest.asi')+$libraries)
     }
     Copy-Item -LiteralPath (Join-Path $mh 'LICENSE.txt') -Destination (Join-Path $out 'MinHook-LICENSE.txt') -Force
-    Write-Output ('Build and importer self-tests passed: '+$out)
+    Write-Output ('Build and importer/HUD self-tests passed: '+$out)
 } finally { Pop-Location }

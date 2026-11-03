@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include "controls.h"
 #include "cloud.h"
+#include "status.h"
+#include "track_info.h"
 #include <shellapi.h>
 
 static RadioLog logger;
@@ -18,8 +20,13 @@ static HHOOK message_hook;
 static UINT control_message;
 static wchar_t config_path[32768];
 static wchar_t import_path[32768], cloud_list_path[32768];
-static std::vector<uint64_t> cloud_ids;
+static std::vector<CloudTrack> cloud_tracks;
 static size_t cloud_index;
+static std::wstring notice;
+static ULONGLONG notice_until,requested_at;
+static CloudTrack requested_track;
+static bool cloud_request_pending;
+static void inform(const wchar_t *text) {notice=text;notice_until=GetTickCount64()+6000;}
 static void trace(const char *s) { if(logger)logger(s); }
 static int read_key(const wchar_t *name,const wchar_t *fallback,int default_key) {
     wchar_t value[32];GetPrivateProfileStringW(L"Keys",name,fallback,value,32,config_path);
@@ -28,11 +35,23 @@ static int read_key(const wchar_t *name,const wchar_t *fallback,int default_key)
     long n=wcstol(value,&end,10);return end&&end!=value&&!*end&&n>=0&&n<256?(int)n:default_key;
 }
 static bool load_cloud_list() {
-    cloud_ids.clear();
+    cloud_tracks.clear();
     UINT count=GetPrivateProfileIntW(L"NetEase",L"Count",0,cloud_list_path);
-    for(UINT i=0;i<count&&i<2000;++i){wchar_t section[40],id[40];swprintf_s(section,L"Track%u",i);GetPrivateProfileStringW(section,L"Id",L"0",id,40,cloud_list_path);uint64_t value=_wcstoui64(id,NULL,10);if(value)cloud_ids.push_back(value);}
+    for(UINT i=0;i<count&&i<2000;++i){
+        wchar_t section[40],id[40],title[512],artist[512];swprintf_s(section,L"Track%u",i);
+        GetPrivateProfileStringW(section,L"Id",L"0",id,40,cloud_list_path);
+        GetPrivateProfileStringW(section,L"Name",L"",title,512,cloud_list_path);
+        GetPrivateProfileStringW(section,L"Artist",L"",artist,512,cloud_list_path);
+        uint64_t value=_wcstoui64(id,NULL,10);if(value)cloud_tracks.push_back({value,title,artist});
+    }
     cloud_index=0;
-    char line[96];sprintf_s(line,"NetEase imported tracks=%zu",cloud_ids.size());trace(line);return !cloud_ids.empty();
+    char line[96];sprintf_s(line,"NetEase imported tracks=%zu",cloud_tracks.size());trace(line);return !cloud_tracks.empty();
+}
+static bool request_track(size_t index) {
+    if(index>=cloud_tracks.size())return false;
+    if(!cloud_open(cloud_tracks[index].id)){inform(L"无法打开网易云，请检查客户端安装");return false;}
+    cloud_index=index;requested_track=cloud_tracks[index];requested_at=GetTickCount64();cloud_request_pending=true;
+    return true;
 }
 
 static LRESULT CALLBACK messages(int code,WPARAM removed,LPARAM data) {
@@ -170,41 +189,66 @@ static DWORD WINAPI run(void *) {
     if(!audio_ready)trace("Local playback unavailable; native F8 remains active");
     wchar_t source[40];GetPrivateProfileStringW(L"Music",L"Source",L"NetEase",source,40,config_path);
     bool prefer_cloud=_wcsicmp(source,L"Local")!=0, cloud_mode=false;
-    int keys[4]={read_key(L"Pause",L"F8",VK_F8),read_key(L"Source",L"F9",VK_F9),read_key(L"Next",L"F10",VK_F10),read_key(L"Import",L"F11",VK_F11)};
-    bool held[4]={false,false,false,false};int pending_switch=0;ULONGLONG pending_since=0;
-    trace("Controls ready: F8 pause/resume, F9 native/imported, F10 next, F11 NetEase import");
+    int keys[5]={read_key(L"Pause",L"F8",VK_F8),read_key(L"Source",L"F9",VK_F9),read_key(L"Next",L"F10",VK_F10),read_key(L"Import",L"F11",VK_F11),read_key(L"Info",L"F7",VK_F7)};
+    bool held[5]={false,false,false,false,false};int pending_switch=0;ULONGLONG pending_since=0;
+    cloud_watch_start();
+    trace("Portable radio ready: F7 track info, F8 pause/resume, F9 source, F10 next, F11 import");
     while(!stop_worker) {
-        if(InterlockedExchange(&session_end,0)) {if(audio_ready)p.stop();if(cloud_mode)cloud_command(2);cloud_mode=false;pending_switch=0;InterlockedExchange(&ack,0);}
+        bool reveal=false;
+        if(InterlockedExchange(&session_end,0)) {if(audio_ready)p.stop();if(cloud_mode)cloud_command(2);cloud_mode=false;cloud_request_pending=false;pending_switch=0;InterlockedExchange(&ack,0);}
         LONG reply=InterlockedExchange(&ack,0);
         if(pending_switch&&reply) {
             if(reply==2){
-                if(pending_switch==2){cloud_mode=cloud_open(cloud_ids[0])!=0;if(cloud_mode)trace("NetEase client playback requested");else{trace("NetEase URI launch failed");controls_post(3);}}
+                if(pending_switch==2){cloud_mode=request_track(0);if(cloud_mode)trace("NetEase client playback requested");else{trace("NetEase URI launch failed");controls_post(3);}}
                 else {p.paused=false;p.failures=0;p.load(0);}
-            }
+            }else inform(L"切换失败：游戏内置电台未响应");
             pending_switch=0;
         }
-        if(pending_switch&&GetTickCount64()-pending_since>2500){pending_switch=0;controls_post(3);trace("Game-thread control timed out; local playback was not started");}
+        if(pending_switch&&GetTickCount64()-pending_since>2500){pending_switch=0;controls_post(3);inform(L"切换超时，请先上、下摩托一次");trace("Game-thread control timed out; imported playback was not started");}
         DWORD foreground_pid=0;HWND foreground=GetForegroundWindow();if(foreground)GetWindowThreadProcessId(foreground,&foreground_pid);
-        for(int i=0;i<4;++i) {
+        for(int i=0;i<5;++i) {
             bool down=keys[i]>0&&keys[i]<256&&(GetAsyncKeyState(keys[i])&0x8000)!=0;
             bool pressed=down&&!held[i]&&foreground_pid==GetCurrentProcessId();held[i]=down;
-            if(!pressed||pending_switch)continue;
+            if(!pressed)continue;
+            reveal=true;
+            if(i==4)continue;
+            notice_until=0;
+            if(pending_switch){inform(L"正在切换音源，请稍候");continue;}
             if(i==0) {
-                if(cloud_mode){trace(cloud_command(1)?"NetEase pause/resume accepted":"NetEase media session unavailable; enable SMTC");}
+                if(cloud_mode){bool ok=cloud_command(1)!=0;trace(ok?"NetEase pause/resume accepted":"NetEase media session unavailable; enable SMTC");if(!ok)inform(L"无法控制网易云，请在客户端开启 SMTC");}
                 else if(p.local) {p.paused=!p.paused;if(!p.pending){if(p.paused)p.media->Pause();else p.media->Play();}trace(p.paused?"Local paused":"Local resumed");}
-                else controls_post(1);
+                else {if(controls_post(1))inform(L"已请求暂停／继续内置电台");else inform(L"请先上、下摩托一次，接入内置电台");}
             } else if(i==1) {
-                if(cloud_mode){cloud_command(2);cloud_mode=false;controls_post(3);}
+                if(cloud_mode){cloud_command(2);cloud_mode=false;cloud_request_pending=false;controls_post(3);}
                 else if(p.local){p.stop();controls_post(3);}
-                else if(prefer_cloud){if(load_cloud_list()&&controls_post(2)){pending_switch=2;pending_since=GetTickCount64();}}
-                else if(audio_ready){p.scan();if(!p.files.empty()&&controls_post(2)){pending_switch=1;pending_since=GetTickCount64();}}
+                else if(prefer_cloud){if(!load_cloud_list())inform(L"尚未导入歌曲，请打开链接导入窗口");else if(controls_post(2)){pending_switch=2;pending_since=GetTickCount64();}else inform(L"请先上、下摩托一次，接入电台控制");}
+                else if(audio_ready){p.scan();if(p.files.empty())inform(L"本地音乐文件夹中没有 MP3/WAV");else if(controls_post(2)){pending_switch=1;pending_since=GetTickCount64();}else inform(L"请先上、下摩托一次，接入电台控制");}
             } else if(i==2){
-                if(cloud_mode&&!cloud_ids.empty()){cloud_index=(cloud_index+1)%cloud_ids.size();cloud_open(cloud_ids[cloud_index]);trace("Next imported NetEase track requested");}
+                if(cloud_mode&&!cloud_tracks.empty()){request_track((cloud_index+1)%cloud_tracks.size());trace("Next imported NetEase track requested");}
                 else if(audio_ready&&p.local)p.next();
-            } else if(i==3){std::wstring args=L"--library \""+std::wstring(cloud_list_path)+L"\"";ShellExecuteW(NULL,L"open",import_path,args.c_str(),NULL,SW_SHOWNORMAL);trace("NetEase import window opened");}
+                else inform(L"当前是内置电台；切到导入音源后可用下一首");
+            } else if(i==3){std::wstring args=L"--library \""+std::wstring(cloud_list_path)+L"\"";if((INT_PTR)ShellExecuteW(NULL,L"open",import_path,args.c_str(),NULL,SW_SHOWNORMAL)<=32)inform(L"导入窗口启动失败，请检查导入器文件");else trace("NetEase import window opened");}
         }
-        if(audio_ready)p.poll();Sleep(20);
+        if(audio_ready)p.poll();
+        RadioStatus display;
+        if(cloud_mode) {
+            auto info=describe_cloud(cloud_status(),cloud_tracks,cloud_index,requested_track,cloud_request_pending,
+                                     GetTickCount64()-requested_at>=12000);
+            display=info.card;cloud_index=info.index;cloud_request_pending=info.pending;
+        }else if(p.local){
+            display.source=L"本地音乐";auto slash=p.current.find_last_of(L'\\');display.title=p.current.substr(slash==std::wstring::npos?0:slash+1);
+            display.state=p.pending?L"载入中":p.paused?L"已暂停":L"播放中";
+            display.detail=std::to_wstring(p.index+1)+L" / "+std::to_wstring(p.files.size());
+        }else {
+            display.source=L"游戏内置电台";display.title=L"摩托电台";
+            display.state=L"内置音源";display.detail=L"支持下车续播 · 内置曲名暂不可读取";
+        }
+        if(pending_switch){display.state=L"切换音源中";display.detail=L"正在等待游戏线程确认";}
+        if(GetTickCount64()<notice_until)display.detail=notice;
+        status_publish(display,reveal);
+        Sleep(20);
     }
+    cloud_watch_stop();status_stop();
     if(audio_ready){p.stop();p.media->Shutdown();p.media->Release();}
     p.events->Release();MFShutdown();CoUninitialize();return 0;
 }
@@ -212,6 +256,7 @@ extern "C" void controls_start(HMODULE module,const wchar_t *config,RadioLog log
     logger=log;wcscpy_s(config_path,config);wcscpy_s(cloud_list_path,config);
     wchar_t *slash=wcsrchr(cloud_list_path,L'\\');if(slash)*slash=0;wcscat_s(cloud_list_path,L"\\PortableRadioNetEase.ini");
     GetModuleFileNameW(module,import_path,32768);slash=wcsrchr(import_path,L'\\');if(slash)*slash=0;wcscat_s(import_path,L"\\NetEaseImporter.exe");
+    status_start(module,config);
     worker=CreateThread(NULL,0,run,NULL,0,NULL);
 }
 extern "C" void controls_shutdown(void) {

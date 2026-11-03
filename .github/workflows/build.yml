@@ -9,6 +9,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check source publication boundaries
         run: python scripts/check_source.py
-      - name: Build native plugin, importer and synthetic test harnesses
+      - name: Build plugin, importer and HUD; run network-free tests
         shell: pwsh
         run: ./scripts/build.ps1 -WithTests

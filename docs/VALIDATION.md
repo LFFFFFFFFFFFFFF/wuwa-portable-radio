@@ -9,6 +9,9 @@
 | NetEase transport controls | Targeted Windows SMTC pause/resume accepted and playback state restored | Requires the official client, SMTC and account access |
 | Local player | Muted generated WAV/MP3 files; Unicode paths, corrupt-file skip, pause/resume and next-track behavior tested | Not an assurance for every codec/file |
 | New game hotkeys | Awaiting live user confirmation | Do not describe these as fully game-validated |
+| Now-playing display | UTF-16/Unicode/PID/parser/long-title render tests; card preview visually inspected | New foreground-only overlay still needs live game confirmation; exclusive fullscreen may hide it |
+| Actual vs requested title | Native unit tests cover pending/timeout/confirmation, equivalent NFC/NFD Japanese titles, paused state, natural next, an unrelated client queue, missing SMTC and same-title/different-artist input | A metadata match is title/artist matching, not an authenticated NetEase track-ID acknowledgement |
+| Metadata watcher | Dedicated COM thread, bounded async waits; a read-only live probe is supplied | Latest local run had no active NetEase media session; actual new metadata path still needs an active client test |
 
 The repository contains no extracted game code, game assembly, runtime binary, songs, account cookies or raw game logs.
 
@@ -19,7 +22,9 @@ python scripts/check_source.py
 pwsh -NoProfile -File scripts/build.ps1 -WithTests
 ```
 
-The importer self-test does not access the network or read the user's library.
+The importer and HUD self-tests do not access the network or read the user's library. With `-WithTests`, the build also runs `track_info_lab.exe` without network access. `cloud_status_lab.exe` is an optional, read-only local probe: it reports metadata lengths/playback state and sends no playback commands. It returns 2 if there is no NetEase session. It is not run by CI.
+
+The display uses Windows [SMTC media properties](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession) and a separate [non-activating, layered window](https://learn.microsoft.com/en-us/windows/win32/winmsg/extended-window-styles). It does not add rendering hooks. `RadioHud.exe --render-preview <output.png>` renders a synthetic preview without opening a game window.
 
 For optional integration experiments, independently provide the compatible runtime and its base-class-library directory from your own installation. Do not commit or upload those files:
 
