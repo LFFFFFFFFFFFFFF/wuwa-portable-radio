@@ -1,0 +1,246 @@
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <mfplay.h>
+#include <mfapi.h>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <stdio.h>
+#include "controls.h"
+#include "cloud.h"
+#include <shellapi.h>
+
+static RadioLog logger;
+static HANDLE worker;
+static volatile LONG stop_worker, game_thread, session_active, session_end, ack;
+static HHOOK message_hook;
+static UINT control_message;
+static wchar_t config_path[32768];
+static wchar_t import_path[32768], cloud_list_path[32768];
+static std::vector<uint64_t> cloud_ids;
+static size_t cloud_index;
+static void trace(const char *s) { if(logger)logger(s); }
+static int read_key(const wchar_t *name,const wchar_t *fallback,int default_key) {
+    wchar_t value[32];GetPrivateProfileStringW(L"Keys",name,fallback,value,32,config_path);
+    wchar_t *end=nullptr;
+    if(value[0]==L'F'||value[0]==L'f'){long n=wcstol(value+1,&end,10);return end&&!*end&&n>=1&&n<=24?VK_F1+(int)n-1:default_key;}
+    long n=wcstol(value,&end,10);return end&&end!=value&&!*end&&n>=0&&n<256?(int)n:default_key;
+}
+static bool load_cloud_list() {
+    cloud_ids.clear();
+    UINT count=GetPrivateProfileIntW(L"NetEase",L"Count",0,cloud_list_path);
+    for(UINT i=0;i<count&&i<2000;++i){wchar_t section[40],id[40];swprintf_s(section,L"Track%u",i);GetPrivateProfileStringW(section,L"Id",L"0",id,40,cloud_list_path);uint64_t value=_wcstoui64(id,NULL,10);if(value)cloud_ids.push_back(value);}
+    cloud_index=0;
+    char line[96];sprintf_s(line,"NetEase imported tracks=%zu",cloud_ids.size());trace(line);return !cloud_ids.empty();
+}
+
+static LRESULT CALLBACK messages(int code,WPARAM removed,LPARAM data) {
+    if(code==HC_ACTION&&removed==PM_REMOVE) {
+        MSG *m=(MSG *)data;
+        if(m->message==control_message&&m->wParam==0x50524144) {
+            int result=0;
+            if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)result=radio_control((int)m->lParam);
+            InterlockedExchange(&ack,result ? (LONG)m->lParam : -1);
+            m->message=WM_NULL;
+        }
+    }
+    return CallNextHookEx(message_hook,code,removed,data);
+}
+extern "C" void controls_capture(void) {
+    DWORD current=GetCurrentThreadId();
+    LONG previous=InterlockedCompareExchange(&game_thread,(LONG)current,0);
+    if(previous && previous!=(LONG)current)return;
+    if(!message_hook) {
+        control_message=RegisterWindowMessageW(L"PortableRadio.Native.Controls.20261103");
+        message_hook=SetWindowsHookExW(WH_GETMESSAGE,messages,NULL,current);
+        if(!message_hook) { trace("Game-thread message hook unavailable");return; }
+        char line[96];sprintf_s(line,"Controls attached to observed game thread=%lu",current);trace(line);
+    }
+    InterlockedExchange(&session_active,1);
+}
+extern "C" int controls_post(int command) {
+    InterlockedExchange(&ack,0);
+    if(!game_thread||!message_hook||!session_active) { trace("Controls need a motorbike enter/leave event first");return 0; }
+    return PostThreadMessageW((DWORD)game_thread,control_message,0x50524144,command)!=0;
+}
+extern "C" DWORD controls_game_thread(void) { return (DWORD)game_thread; }
+extern "C" void controls_session_end(void) {
+    InterlockedExchange(&session_active,0);InterlockedExchange(&session_end,1);
+}
+
+class Events final: public IMFPMediaPlayerCallback {
+    volatile LONG refs=1;
+public:
+    volatile LONG ready=0, ended=0, error=0, played=0;
+    volatile LONG generation=0;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void **out) override {
+        if(!out)return E_POINTER;
+        if(id==__uuidof(IUnknown)||id==__uuidof(IMFPMediaPlayerCallback)){*out=this;AddRef();return S_OK;}
+        *out=nullptr;return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { LONG n=InterlockedDecrement(&refs);if(!n)delete this;return (ULONG)n; }
+    void STDMETHODCALLTYPE OnMediaPlayerEvent(MFP_EVENT_HEADER *event) override {
+        if(FAILED(event->hrEvent)) { InterlockedExchange(&error,1);return; }
+        IMFPMediaItem *item=nullptr;
+        if(event->eEventType==MFP_EVENT_TYPE_MEDIAITEM_SET)item=MFP_GET_MEDIAITEM_SET_EVENT(event)->pMediaItem;
+        if(event->eEventType==MFP_EVENT_TYPE_PLAYBACK_ENDED)item=MFP_GET_PLAYBACK_ENDED_EVENT(event)->pMediaItem;
+        if(item) { DWORD_PTR id=0;item->GetUserData(&id);if(id!=(DWORD_PTR)generation)return; }
+        if(event->eEventType==MFP_EVENT_TYPE_MEDIAITEM_SET)InterlockedExchange(&ready,1);
+        if(event->eEventType==MFP_EVENT_TYPE_PLAYBACK_ENDED)InterlockedExchange(&ended,1);
+        if(event->eEventType==MFP_EVENT_TYPE_PLAY)InterlockedExchange(&played,1);
+    }
+};
+
+struct Player {
+    IMFPMediaPlayer *media=nullptr;
+    Events *events=nullptr;
+    std::vector<std::wstring> files;
+    std::wstring folder,current;
+    size_t index=0;
+    bool local=false,paused=false,pending=false;
+    size_t failures=0;
+    float volume=0.5f;
+    void scan() {
+        files.clear();WIN32_FIND_DATAW info;
+        HANDLE search=FindFirstFileW((folder+L"\\*").c_str(),&info);
+        if(search!=INVALID_HANDLE_VALUE) {
+            do {
+                if(info.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT))continue;
+                const wchar_t *ext=wcsrchr(info.cFileName,L'.');
+                if(ext&&(!_wcsicmp(ext,L".mp3")||!_wcsicmp(ext,L".wav")))files.emplace_back(folder+L"\\"+info.cFileName);
+            }while(FindNextFileW(search,&info));FindClose(search);
+        }
+        std::sort(files.begin(),files.end(),[](const std::wstring&a,const std::wstring&b){return _wcsicmp(a.c_str(),b.c_str())<0;});
+        char line[96];sprintf_s(line,"Local music scan: %zu MP3/WAV files",files.size());trace(line);
+    }
+    void stop() {
+        ++events->generation;
+        if(media){media->Stop();media->ClearMediaItem();}
+        local=false;pending=false;
+        InterlockedExchange(&events->ready,0);InterlockedExchange(&events->ended,0);InterlockedExchange(&events->error,0);
+    }
+    bool load(size_t requested) {
+        if(files.empty())return false;
+        for(size_t tried=0;tried<files.size();++tried) {
+            index=(requested+tried)%files.size();current=files[index];
+            LONG generation=InterlockedIncrement(&events->generation);
+            InterlockedExchange(&events->ready,0);InterlockedExchange(&events->ended,0);InterlockedExchange(&events->error,0);
+            media->Stop();IMFPMediaItem *item=nullptr;
+            HRESULT hr=media->CreateMediaItemFromURL(current.c_str(),TRUE,(DWORD_PTR)generation,&item);
+            if(SUCCEEDED(hr)) { hr=media->SetMediaItem(item);item->Release(); }
+            if(SUCCEEDED(hr)){local=true;pending=true;trace("Local track loading");return true;}
+            char line[96];sprintf_s(line,"Local track rejected: HRESULT=0x%08lx",(unsigned long)hr);trace(line);
+        }
+        trace("No playable local track; returning to native source");stop();controls_post(3);return false;
+    }
+    void next() {
+        std::wstring prior=current;scan();
+        auto found=std::find(files.begin(),files.end(),prior);
+        size_t next_index=found==files.end()?0:((size_t)(found-files.begin())+1)%files.size();
+        failures=0;load(next_index);
+    }
+    void poll() {
+        if(!local)return;
+        if(InterlockedExchange(&events->played,0))failures=0;
+        if(InterlockedExchange(&events->error,0)) {
+            if(++failures>=files.size()){stop();controls_post(3);trace("Local playback failed; restored native source request");}
+            else load(index+1);
+            return;
+        }
+        if(InterlockedExchange(&events->ready,0)) {
+            pending=false;media->SetVolume(volume);
+            if(!paused)media->Play();
+            trace(paused?"Local track ready (paused)":"Local playback started");
+        }
+        if(InterlockedExchange(&events->ended,0)){paused=false;load(index+1);}
+    }
+};
+
+static DWORD WINAPI run(void *) {
+    HRESULT com=CoInitializeEx(NULL,COINIT_MULTITHREADED);
+    if(FAILED(com)){trace("Local audio COM initialization failed");return 1;}
+    if(FAILED(MFStartup(MF_VERSION))) { CoUninitialize();trace("Media Foundation unavailable");return 1; }
+    Player p;p.events=new Events;
+    wchar_t folder[32768];GetPrivateProfileStringW(L"Music",L"Folder",L"",folder,32768,config_path);p.folder=folder;
+    int volume=(int)GetPrivateProfileIntW(L"Music",L"Volume",50,config_path);p.volume=(float)std::max(0,std::min(100,volume))/100.0f;
+    HRESULT hr=MFPCreateMediaPlayer(NULL,FALSE,MFP_OPTION_FREE_THREADED_CALLBACK,p.events,NULL,&p.media);
+    bool audio_ready=SUCCEEDED(hr);
+    if(!audio_ready)trace("Local playback unavailable; native F8 remains active");
+    wchar_t source[40];GetPrivateProfileStringW(L"Music",L"Source",L"NetEase",source,40,config_path);
+    bool prefer_cloud=_wcsicmp(source,L"Local")!=0, cloud_mode=false;
+    int keys[4]={read_key(L"Pause",L"F8",VK_F8),read_key(L"Source",L"F9",VK_F9),read_key(L"Next",L"F10",VK_F10),read_key(L"Import",L"F11",VK_F11)};
+    bool held[4]={false,false,false,false};int pending_switch=0;ULONGLONG pending_since=0;
+    trace("Controls ready: F8 pause/resume, F9 native/imported, F10 next, F11 NetEase import");
+    while(!stop_worker) {
+        if(InterlockedExchange(&session_end,0)) {if(audio_ready)p.stop();if(cloud_mode)cloud_command(2);cloud_mode=false;pending_switch=0;InterlockedExchange(&ack,0);}
+        LONG reply=InterlockedExchange(&ack,0);
+        if(pending_switch&&reply) {
+            if(reply==2){
+                if(pending_switch==2){cloud_mode=cloud_open(cloud_ids[0])!=0;if(cloud_mode)trace("NetEase client playback requested");else{trace("NetEase URI launch failed");controls_post(3);}}
+                else {p.paused=false;p.failures=0;p.load(0);}
+            }
+            pending_switch=0;
+        }
+        if(pending_switch&&GetTickCount64()-pending_since>2500){pending_switch=0;controls_post(3);trace("Game-thread control timed out; local playback was not started");}
+        DWORD foreground_pid=0;HWND foreground=GetForegroundWindow();if(foreground)GetWindowThreadProcessId(foreground,&foreground_pid);
+        for(int i=0;i<4;++i) {
+            bool down=keys[i]>0&&keys[i]<256&&(GetAsyncKeyState(keys[i])&0x8000)!=0;
+            bool pressed=down&&!held[i]&&foreground_pid==GetCurrentProcessId();held[i]=down;
+            if(!pressed||pending_switch)continue;
+            if(i==0) {
+                if(cloud_mode){trace(cloud_command(1)?"NetEase pause/resume accepted":"NetEase media session unavailable; enable SMTC");}
+                else if(p.local) {p.paused=!p.paused;if(!p.pending){if(p.paused)p.media->Pause();else p.media->Play();}trace(p.paused?"Local paused":"Local resumed");}
+                else controls_post(1);
+            } else if(i==1) {
+                if(cloud_mode){cloud_command(2);cloud_mode=false;controls_post(3);}
+                else if(p.local){p.stop();controls_post(3);}
+                else if(prefer_cloud){if(load_cloud_list()&&controls_post(2)){pending_switch=2;pending_since=GetTickCount64();}}
+                else if(audio_ready){p.scan();if(!p.files.empty()&&controls_post(2)){pending_switch=1;pending_since=GetTickCount64();}}
+            } else if(i==2){
+                if(cloud_mode&&!cloud_ids.empty()){cloud_index=(cloud_index+1)%cloud_ids.size();cloud_open(cloud_ids[cloud_index]);trace("Next imported NetEase track requested");}
+                else if(audio_ready&&p.local)p.next();
+            } else if(i==3){std::wstring args=L"--library \""+std::wstring(cloud_list_path)+L"\"";ShellExecuteW(NULL,L"open",import_path,args.c_str(),NULL,SW_SHOWNORMAL);trace("NetEase import window opened");}
+        }
+        if(audio_ready)p.poll();Sleep(20);
+    }
+    if(audio_ready){p.stop();p.media->Shutdown();p.media->Release();}
+    p.events->Release();MFShutdown();CoUninitialize();return 0;
+}
+extern "C" void controls_start(HMODULE module,const wchar_t *config,RadioLog log) {
+    logger=log;wcscpy_s(config_path,config);wcscpy_s(cloud_list_path,config);
+    wchar_t *slash=wcsrchr(cloud_list_path,L'\\');if(slash)*slash=0;wcscat_s(cloud_list_path,L"\\PortableRadioNetEase.ini");
+    GetModuleFileNameW(module,import_path,32768);slash=wcsrchr(import_path,L'\\');if(slash)*slash=0;wcscat_s(import_path,L"\\NetEaseImporter.exe");
+    worker=CreateThread(NULL,0,run,NULL,0,NULL);
+}
+extern "C" void controls_shutdown(void) {
+    InterlockedExchange(&stop_worker,1);
+    if(worker){WaitForSingleObject(worker,5000);CloseHandle(worker);worker=NULL;}
+    if(message_hook){UnhookWindowsHookEx(message_hook);message_hook=NULL;}
+}
+#ifdef RADIO_AUDIO_LAB
+extern "C" int radio_control(int) { return 1; }
+static bool await_state(Player &p,MFP_MEDIAPLAYER_STATE expected) {
+    for(int i=0;i<300;++i){p.poll();MFP_MEDIAPLAYER_STATE state;p.media->GetState(&state);if(state==expected&&!p.pending)return true;Sleep(10);}return false;
+}
+int wmain(int argc,wchar_t **argv) {
+    if(argc!=2)return 2;
+    logger=[](const char *s){puts(s);};
+    if(FAILED(CoInitializeEx(NULL,COINIT_MULTITHREADED))||FAILED(MFStartup(MF_VERSION)))return 3;
+    Player p;p.events=new Events;p.folder=argv[1];p.volume=0;
+    HRESULT hr=MFPCreateMediaPlayer(NULL,FALSE,MFP_OPTION_FREE_THREADED_CALLBACK,p.events,NULL,&p.media);
+    if(FAILED(hr)){printf("create_failed=0x%08lx\n",(unsigned long)hr);return 4;}
+    p.media->SetVolume(0);p.scan();if(p.files.size()!=3)return 5;
+    if(!p.load(0)||!await_state(p,MFP_MEDIAPLAYER_STATE_PLAYING))return 6;
+    if(p.index!=1)return 7;
+    p.media->Pause();p.paused=true;if(!await_state(p,MFP_MEDIAPLAYER_STATE_PAUSED))return 8;
+    Sleep(100);p.media->Play();p.paused=false;if(!await_state(p,MFP_MEDIAPLAYER_STATE_PLAYING))return 9;
+    if(!p.load(2)||!await_state(p,MFP_MEDIAPLAYER_STATE_PLAYING))return 10;
+    bool advanced=false;
+    for(int i=0;i<500;++i){p.poll();if(p.index==1&&!p.pending){advanced=true;break;}Sleep(10);}
+    if(!advanced)return 11;
+    p.stop();p.media->Shutdown();p.media->Release();p.events->Release();MFShutdown();CoUninitialize();
+    puts("PASS: Unicode MP3/WAV folder, corrupt-file skip, real decode/play, pause/resume, automatic next, stop/shutdown (muted)");return 0;
+}
+#endif

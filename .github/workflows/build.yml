@@ -1,0 +1,14 @@
+name: Windows build
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check source publication boundaries
+        run: python scripts/check_source.py
+      - name: Build native plugin, importer and synthetic test harnesses
+        shell: pwsh
+        run: ./scripts/build.ps1 -WithTests
