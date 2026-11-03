@@ -1,6 +1,7 @@
 /* Exact-version radio detours; managed playback commands run on the observed game thread. */
 #include "bridge.h"
 #include "controls.h"
+#include "native_info.h"
 #include "MinHook.h"
 #include <string.h>
 #include <stdio.h>
@@ -134,6 +135,8 @@ int radio_prepare(HMODULE runtime, void *domain, void *image, const char *guid, 
         trace("Target entry already redirects; no hook installed"); return 12;
     }
     target = code;
+    int title_result=native_info_prepare(runtime,image,logger);
+    if(title_result){char line[96];sprintf_s(line,sizeof(line),"Native title reader unavailable: contract stage=%d; playback hooks unaffected",title_result);trace(line);}
     trace("Exact assembly, method signature, field types and JIT body verified");
     return 0;
 }

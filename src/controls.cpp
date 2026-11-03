@@ -11,11 +11,13 @@
 #include "cloud.h"
 #include "status.h"
 #include "track_info.h"
+#include "native_info.h"
 #include <shellapi.h>
 
 static RadioLog logger;
 static HANDLE worker;
 static volatile LONG stop_worker, game_thread, session_active, session_end, ack;
+static volatile LONG info_inflight, info_force;
 static HHOOK message_hook;
 static UINT control_message;
 static wchar_t config_path[32768];
@@ -59,8 +61,14 @@ static LRESULT CALLBACK messages(int code,WPARAM removed,LPARAM data) {
         MSG *m=(MSG *)data;
         if(m->message==control_message&&m->wParam==0x50524144) {
             int result=0;
-            if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)result=radio_control((int)m->lParam);
-            InterlockedExchange(&ack,result ? (LONG)m->lParam : -1);
+            if(m->lParam==4||m->lParam==5){
+                bool force=InterlockedExchange(&info_force,0)!=0||m->lParam==5;
+                if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)native_info_refresh(force);
+                InterlockedExchange(&info_inflight,0);
+            }else{
+                if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)result=radio_control((int)m->lParam);
+                InterlockedExchange(&ack,result ? (LONG)m->lParam : -1);
+            }
             m->message=WM_NULL;
         }
     }
@@ -79,6 +87,12 @@ extern "C" void controls_capture(void) {
     InterlockedExchange(&session_active,1);
 }
 extern "C" int controls_post(int command) {
+    if(command==4||command==5){
+        if(command==5)InterlockedExchange(&info_force,1);
+        if(!game_thread||!message_hook||!session_active||InterlockedCompareExchange(&info_inflight,1,0))return 0;
+        if(PostThreadMessageW((DWORD)game_thread,control_message,0x50524144,command))return 1;
+        InterlockedExchange(&info_inflight,0);return 0;
+    }
     InterlockedExchange(&ack,0);
     if(!game_thread||!message_hook||!session_active) { trace("Controls need a motorbike enter/leave event first");return 0; }
     return PostThreadMessageW((DWORD)game_thread,control_message,0x50524144,command)!=0;
@@ -86,6 +100,8 @@ extern "C" int controls_post(int command) {
 extern "C" DWORD controls_game_thread(void) { return (DWORD)game_thread; }
 extern "C" void controls_session_end(void) {
     InterlockedExchange(&session_active,0);InterlockedExchange(&session_end,1);
+    InterlockedExchange(&info_force,0);
+    native_info_reset();
 }
 
 class Events final: public IMFPMediaPlayerCallback {
@@ -190,7 +206,7 @@ static DWORD WINAPI run(void *) {
     wchar_t source[40];GetPrivateProfileStringW(L"Music",L"Source",L"NetEase",source,40,config_path);
     bool prefer_cloud=_wcsicmp(source,L"Local")!=0, cloud_mode=false;
     int keys[5]={read_key(L"Pause",L"F8",VK_F8),read_key(L"Source",L"F9",VK_F9),read_key(L"Next",L"F10",VK_F10),read_key(L"Import",L"F11",VK_F11),read_key(L"Info",L"F7",VK_F7)};
-    bool held[5]={false,false,false,false,false};int pending_switch=0;ULONGLONG pending_since=0;
+    bool held[5]={false,false,false,false,false};int pending_switch=0;ULONGLONG pending_since=0,next_info=0;
     cloud_watch_start();
     trace("Portable radio ready: F7 track info, F8 pause/resume, F9 source, F10 next, F11 import");
     while(!stop_worker) {
@@ -211,7 +227,7 @@ static DWORD WINAPI run(void *) {
             bool pressed=down&&!held[i]&&foreground_pid==GetCurrentProcessId();held[i]=down;
             if(!pressed)continue;
             reveal=true;
-            if(i==4)continue;
+            if(i==4){if(!cloud_mode&&!p.local)controls_post(5);continue;}
             notice_until=0;
             if(pending_switch){inform(L"正在切换音源，请稍候");continue;}
             if(i==0) {
@@ -240,8 +256,15 @@ static DWORD WINAPI run(void *) {
             display.state=p.pending?L"载入中":p.paused?L"已暂停":L"播放中";
             display.detail=std::to_wstring(p.index+1)+L" / "+std::to_wstring(p.files.size());
         }else {
-            display.source=L"游戏内置电台";display.title=L"摩托电台";
-            display.state=L"内置音源";display.detail=L"支持下车续播 · 内置曲名暂不可读取";
+            if(!pending_switch&&foreground_pid==GetCurrentProcessId()&&GetTickCount64()>=next_info){
+                controls_post(4);next_info=GetTickCount64()+1000;
+            }
+            NativeRadioInfo native=native_info_snapshot();
+            display.source=L"游戏内置电台";
+            display.title=native.title[0]?native.title:native.active?L"曲目 #"+std::to_wstring(native.track_id):L"摩托电台";
+            display.state=!native.observed?L"等待读取":!native.active?L"未播放":native.playing?L"播放中":L"已暂停";
+            display.detail=!native.supported?L"曲名接口不匹配，请查看诊断日志":!native.observed?L"先上、下摩托一次，读取当前曲名":
+                native.active&&!native.title[0]?L"当前曲名未解析，可按查看键重试":L"内置曲目 · 支持下车继续播放";
         }
         if(pending_switch){display.state=L"切换音源中";display.detail=L"正在等待游戏线程确认";}
         if(GetTickCount64()<notice_until)display.detail=notice;

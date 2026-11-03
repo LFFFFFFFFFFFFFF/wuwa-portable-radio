@@ -18,7 +18,9 @@ An experimental Windows x64 portable radio with source switching, playback contr
 
 Only the foreground game responds. Enter and leave the motorbike once after initialization so the plugin can observe the controller thread.
 
-Track/source changes show a six-second card in the top-right corner. F7 shows it again. NetEase titles come from the client's actual SMTC session, including natural queue changes; requested tracks remain explicitly unconfirmed until matching metadata arrives. Local tracks show filenames. Native motorbike track titles are not available yet; the native source label and dismount continuation remain available.
+Track/source changes show a six-second card in the top-right corner. F7 shows it again. NetEase titles come from the client's actual SMTC session, including natural queue changes; requested tracks remain explicitly unconfirmed until matching metadata arrives. Local tracks show filenames.
+
+The native motorbike source also reads the current title and playback state. After observing a motorbike enter/leave event, the plugin reads the current track ID on that same game thread and resolves its configuration title through the game's localization API. It checks for track changes about once per second; F7 forces a refresh. Missing configuration/translation clears the old title and shows a track-ID fallback. This metadata path has been tested with synthetic controllers and still awaits live game confirmation. A metadata-contract mismatch disables title lookup independently of playback hooks.
 
 The separate `RadioHud.exe` display does not activate or intercept mouse input. It hides outside the foreground game and exits when the game closes. Windowed/borderless modes are supported; exclusive fullscreen visibility is not guaranteed. Configure `[HUD] Enabled=0`, `AlwaysVisible=1`, or `ShowSeconds=6` as desired. Existing configurations use these defaults without modification.
 

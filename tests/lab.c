@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "bridge.h"
 #include "controls.h"
+#include "native_info.h"
+#include <wchar.h>
 typedef void *(*Ptr0)(void);
 typedef void *(*Ptr1)(void *);
 typedef void (*Void1)(void *);
@@ -52,6 +54,7 @@ static void reset(int handle, int playing, int vehicle) {
     set_int("CurHandleId",handle);set_bool("IsPlaying",playing);set_bool("IsInVehicle",vehicle);
     set_int("Pauses",0);set_int("NextTracks",0);set_int("Stops",0);set_int("SeatChanges",0);
 }
+static DWORD WINAPI wrong_info_thread(void *unused){(void)unused;native_info_refresh(1);return 0;}
 #define CHECK(x) do { if(!(x)) { printf("CHECK FAILED line=%d\n",__LINE__);return 40; } } while(0)
 int wmain(int argc,wchar_t **argv) {
     if(argc!=4)return 2;
@@ -106,11 +109,47 @@ int wmain(int argc,wchar_t **argv) {
     CHECK(controls_post(1)==1);
     while(PeekMessageW(&msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}
     CHECK(get_bool("IsPlaying"));
+    /* Exercise actual Mono nullable boxing, struct getters and localized strings. */
+    void *model_class=get_class(image,"","MotorcycleMusicPlayerModel");
+    void *exception=NULL;
+    void *model=invoke(get_method(model_class,"get_Instance",0),NULL,NULL,&exception);CHECK(model&&!exception);
+    uint32_t model_root=((NewRoot)GetProcAddress(rt,"mono_gchandle_new"))(model,1);CHECK(model_root);
+    void *id_field=get_field(model_class,"CurPlayMusicId");CHECK(id_field);
+    native_info_refresh(1);NativeRadioInfo info=native_info_snapshot();
+    CHECK(info.supported&&info.observed&&info.active&&info.playing&&info.track_id==501);
+    CHECK(!wcscmp(info.title,L"测试原生曲目甲"));
+    int32_t id=502;set_value(model,id_field,&id);
+    native_info_refresh(0);info=native_info_snapshot();CHECK(info.track_id==502&&!wcscmp(info.title,L"测试原生曲目乙"));
+    CHECK(radio_control(1));native_info_refresh(0);CHECK(!native_info_snapshot().playing);
+    CHECK(radio_control(1));
+    id=501;set_value(model,id_field,&id);
+    HANDLE wrong_thread=CreateThread(NULL,0,wrong_info_thread,NULL,0,NULL);CHECK(wrong_thread);
+    CHECK(WaitForSingleObject(wrong_thread,3000)==WAIT_OBJECT_0);CloseHandle(wrong_thread);
+    CHECK(native_info_snapshot().track_id==502);native_info_refresh(0);CHECK(native_info_snapshot().track_id==501);
+    id=503;set_value(model,id_field,&id);native_info_refresh(1);info=native_info_snapshot();CHECK(!info.title[0]);
+    id=999;set_value(model,id_field,&id);native_info_refresh(1);info=native_info_snapshot();CHECK(!info.title[0]);
+    id=998;set_value(model,id_field,&id);native_info_refresh(1);info=native_info_snapshot();CHECK(!info.title[0]);
+    id=501;set_value(model,id_field,&id);native_info_refresh(1);info=native_info_snapshot();CHECK(!wcscmp(info.title,L"测试原生曲目甲"));
+    set_int("CurHandleId",-1);native_info_refresh(0);info=native_info_snapshot();CHECK(!info.active&&!info.title[0]);
+    set_int("CurHandleId",123);
+    CHECK(controls_post(5));
+    while(PeekMessageW(&msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}
+    info=native_info_snapshot();CHECK(info.active&&info.title[0]);
+    unsigned char alternate=1;
+    set_value(model,get_field(model_class,"UseAlternateLanguage"),&alternate);
+    native_info_refresh(0);info=native_info_snapshot();CHECK(!wcscmp(info.title,L"测试原生曲目甲"));
+    CHECK(controls_post(4));CHECK(!controls_post(5)); // Coalesce F7 with an existing queued refresh.
+    while(PeekMessageW(&msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}
+    info=native_info_snapshot();CHECK(!wcscmp(info.title,L"Native track A"));
+    alternate=0;set_value(model,get_field(model_class,"UseAlternateLanguage"),&alternate);
+    controls_session_end();info=native_info_snapshot();CHECK(!info.observed&&!info.title[0]);
+    call("OnEnterVehicle",args);
+    puts("PASS: native localized names, real nullable boxing, automatic track changes, pause state, wrong-thread rejection, missing data/exceptions, recovery, message dispatch and session reset");
     /* Stress both ABI paths with changing fields. */
     for(int i=0;i<1000;++i){reset(i,1,1);call("OnLeaveVehicle",args);CHECK(get_int("Pauses")==0);}
     CHECK(radio_remove()==0);reset(123,1,1);call("OnLeaveVehicle",args);CHECK(get_int("Pauses")==1);
     controls_shutdown();
-    typedef void (*FreeRoot)(uint32_t);((FreeRoot)GetProcAddress(rt,"mono_gchandle_free"))(root);
+    typedef void (*FreeRoot)(uint32_t);((FreeRoot)GetProcAddress(rt,"mono_gchandle_free"))(model_root);((FreeRoot)GetProcAddress(rt,"mono_gchandle_free"))(root);
     printf("PASS: version guards, active/zero/invalid handles, paused/inactive/disabled pass-through, track continuation, logout/clear cleanup, 1000 calls, hook removal; skipped=%ld\n",radio_skipped());
     return 0;
 }

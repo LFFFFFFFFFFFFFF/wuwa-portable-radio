@@ -5,6 +5,7 @@
 | Native radio continuation | User confirmed music continues after dismount on one audited client | Other client versions are not established |
 | ASI entry | Actual local OptiScaler late-loaded the module | Depends on the installed loader and its configuration |
 | Native control bridge | Standalone host, locally supplied Mono runtime, handwritten fixture; pause/resume, paused dismount, source-state restoration, cleanup, repeated calls and unhooking tested | Synthetic behavior does not prove live game hotkeys |
+| Native track names | Static metadata audit identified model track ID, nullable music config/title and localization signatures. Local Mono fixture tests exercised actual nullable boxing/struct getters, localized Unicode names, next track, pause, wrong-thread rejection, missing data, config/translation exceptions, recovery, queued refresh and session reset | Read-only metadata queries use the observed game thread and add no detours. Actual game titles still await live confirmation |
 | NetEase import | A song and a 200-track public list were imported; foreign-host input rejected | Public metadata endpoints can change; private lists not supported |
 | NetEase transport controls | Targeted Windows SMTC pause/resume accepted and playback state restored | Requires the official client, SMTC and account access |
 | Local player | Muted generated WAV/MP3 files; Unicode paths, corrupt-file skip, pause/resume and next-track behavior tested | Not an assurance for every codec/file |
@@ -14,6 +15,8 @@
 | Metadata watcher | Dedicated COM thread, bounded async waits; a read-only live probe is supplied | Latest local run had no active NetEase media session; actual new metadata path still needs an active client test |
 
 The repository contains no extracted game code, game assembly, runtime binary, songs, account cookies or raw game logs.
+
+Native metadata calls follow the [Mono embedding API](https://www.mono-project.com/docs/advanced/embedding/). Temporary managed results use short-lived GC handles; no managed object/string pointers are passed to the HUD worker. The HUD receives a copied UTF-16 snapshot. Refresh messages have separate bookkeeping and do not consume playback command acknowledgements.
 
 ## Repeatable checks
 
