@@ -1,9 +1,11 @@
 [Keys]
-Info=F7
-Pause=F8
-Source=F9
-Next=F10
-Import=F11
+LayoutVersion=2
+Previous=-
+Next==
+Open=OEM_3
+Pause=NONE
+Source=NONE
+Import=NONE
 
 [Music]
 Source=NetEase
@@ -14,5 +16,5 @@ Volume=50
 [HUD]
 Enabled=1
 ShowSeconds=6
-AlwaysVisible=0
+AlwaysVisible=1
 Margin=24

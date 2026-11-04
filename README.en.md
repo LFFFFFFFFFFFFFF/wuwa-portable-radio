@@ -6,27 +6,21 @@ An experimental Windows x64 portable radio with source switching, playback contr
 
 **Status:** dismount continuation was tested on one 3.7 client. Link import and NetEase client media controls were tested separately. The newer hotkeys and now-playing overlay still await live game confirmation. This is not a general compatibility guarantee.
 
-## Controls
+## Controls and UI
 
 | Key | Action |
 | --- | --- |
-| F7 | Show current source, title, artist and playback state |
-| F8 | Pause/resume the current source |
-| F9 | Switch between the native radio and NetEase |
-| F10 | Next item in the imported list |
-| F11 | Open the link importer |
+| `-` | Previous track, including the official native navigation function |
+| `=` | Next track, including the official native navigation function |
+| Backtick / the key below Esc | Open the original in-game radio view |
 
-Only the foreground game responds. Enter and leave the motorbike once after initialization so the plugin can observe the controller thread.
+Hotkeys respond only in the foreground game, without Ctrl/Alt/Shift. Legacy F7–F11 bindings are disabled by default. Enter/leave the motorbike once after initialization to observe its controller thread.
 
-Track/source changes show a six-second card in the top-right corner. F7 shows it again. NetEase titles come from the client's actual SMTC session, including natural queue changes; requested tracks remain explicitly unconfirmed until matching metadata arrives. Local tracks show filenames.
+The full album/song screen is the game's original view. A slim cyan player replaces the old diagnostic card; it offers previous/pause/next buttons and a right-click source menu. During riding, the official native mini-player is retained. When the full radio view is visible, an aligned add-on provides **Add songs** and **Source** buttons beside the channel title. It is a separate window, not a redistributed or overwritten game UI asset.
 
-The native motorbike source also reads the current title and playback state. After observing a motorbike enter/leave event, the plugin reads the current track ID on that same game thread and resolves its configuration title through the game's localization API. It checks for track changes about once per second; F7 forces a refresh. Missing configuration/translation clears the old title and shows a track-ID fallback. This metadata path has been tested with synthetic controllers and still awaits live game confirmation. A metadata-contract mismatch disables title lookup independently of playback hooks.
+The game-styled add-song panel uses a vinyl sleeve, translucent track rows and a rounded footer; users can select individual tracks. It accepts NetEase song/public-playlist links and previews the metadata. Adding preserves the existing external list and deduplicates by song ID; it does not create or unlock official game songs. Choose NetEase from the source menu to play. The official logged-in client remains responsible for audio and account permissions; SMTC must be enabled. No cookies or encrypted audio are extracted.
 
-The separate `RadioHud.exe` display does not activate or intercept mouse input. It hides outside the foreground game and exits when the game closes. Windowed/borderless modes are supported; exclusive fullscreen visibility is not guaranteed. Configure `[HUD] Enabled=0`, `AlwaysVisible=1`, or `ShowSeconds=6` as desired. Existing configurations use these defaults without modification.
-
-NetEase playback is delegated to the logged-in official desktop client, with SMTC enabled under its system settings. Imports contain song/public-playlist metadata. Account playback permissions remain enforced by the client. No credentials, encrypted audio, cookies, or game files are distributed.
-
-F10 follows the imported list; natural track-end behavior follows the NetEase client's own queue. Set `Source=Local` to use the optional MP3/WAV folder player instead.
+Native titles use the current game track ID/configuration/localization. NetEase titles use the client's actual media session, with pending switches shown explicitly. Local tracks show filenames. Windowed/borderless mode is required for reliable add-on visibility. Natural track-end playback still follows the NetEase client's own queue; `-`/`=` follow the imported list. Local MP3/WAV playback remains available from the source menu.
 
 ## Build
 
@@ -48,7 +42,7 @@ Copy `PortableRadio.ini.example` to `Client/Saved/Config/PortableRadio.ini`. Use
 
 The code requires the audited assembly MVID `398499d1-a649-4e50-8ac2-270d7cbbc858`, method token, signatures, field types and a verified distinct JIT body. Mismatches refuse installation. Do not remove compatibility checks to force support for another client.
 
-F11 opens the importer: paste a song or public-playlist share link, preview the tracks, then replace the Mod's current list. Switch sources again to reload it. Standalone importer usage can pass `--library "<path>"`.
+The Add songs button opens the themed importer: paste a song or public-playlist link, preview it, then append it to the external list without replacing existing tracks. Standalone importer usage can pass `--library "<path>"`.
 
 Configuration and list files are under `Client/Saved/Config/`; diagnostics are under `Client/Saved/Logs/PortableRadioNative.log`. The display reads an ephemeral `PortableRadioStatus-<pid>.ini` there; this local listening state is never uploaded. Public NetEase web endpoints can change and may need maintenance. Private account playlists are not supported.
 

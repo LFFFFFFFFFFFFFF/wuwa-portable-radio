@@ -2,6 +2,7 @@
 #include "bridge.h"
 #include "controls.h"
 #include "native_info.h"
+#include "native_ui.h"
 #include "MinHook.h"
 #include <string.h>
 #include <stdio.h>
@@ -34,13 +35,19 @@ static ClearFn original_clear;
 static void *extra_targets[3], *pause_method, *resume_method, *instance_method;
 static InvokeFn invoke;
 static int native_restore;
-static void enter_detour(void *self,void *passenger,int seat_change) { controls_capture();original_enter(self,passenger,seat_change); }
-static void login_detour(void *self) { native_restore=0;controls_session_end();original_login(self); }
-static unsigned char clear_detour(void *self) { native_restore=0;controls_session_end();return original_clear(self); }
+static void *quick_method,*open_method,*check_method;
+static Ptr1 unbox_result;
+static int navigation_ready;
+static volatile LONG riding;
+int radio_riding(void){return (int)InterlockedCompareExchange(&riding,0,0);}
+static void enter_detour(void *self,void *passenger,int seat_change) { InterlockedExchange(&riding,1);controls_capture();original_enter(self,passenger,seat_change); }
+static void login_detour(void *self) { InterlockedExchange(&riding,0);native_restore=0;controls_session_end();original_login(self); }
+static unsigned char clear_detour(void *self) { InterlockedExchange(&riding,0);native_restore=0;controls_session_end();return original_clear(self); }
 
 static void trace(const char *s) { if (logger) logger(s); }
 
 static void leave_detour(void *self, void *passenger, int is_seat_change) {
+    if(!is_seat_change)InterlockedExchange(&riding,0);
     controls_capture();
     if (self && InterlockedCompareExchange(&enabled, 0, 0)) {
         int32_t handle = -1;
@@ -137,6 +144,17 @@ int radio_prepare(HMODULE runtime, void *domain, void *image, const char *guid, 
     target = code;
     int title_result=native_info_prepare(runtime,image,logger);
     if(title_result){char line[96];sprintf_s(line,sizeof(line),"Native title reader unavailable: contract stage=%d; playback hooks unaffected",title_result);trace(line);}
+    quick_method=find_method(klass,"QuickPlayMusic",1);open_method=find_method(klass,"OpenMusicPlayerView",0);check_method=find_method(klass,"CheckIsEnable",1);
+    unbox_result=(Ptr1)GetProcAddress(runtime,"mono_object_unbox");
+    if(quick_method&&open_method&&check_method&&unbox_result){
+        void *qs=method_signature(quick_method),*os=method_signature(open_method),*cs=method_signature(check_method),*qi=NULL,*ci=NULL;
+        navigation_ready=qs&&os&&cs&&!(method_flags(quick_method,NULL)&0x10)&&!(method_flags(open_method,NULL)&0x10)&&!(method_flags(check_method,NULL)&0x10)&&
+            param_count(qs)==1&&type_kind(return_type(qs))==1&&type_kind(param_type(qs,&qi))==2&&
+            param_count(os)==0&&type_kind(return_type(os))==1&&param_count(cs)==1&&type_kind(return_type(cs))==2&&type_kind(param_type(cs,&ci))==2;
+    }
+    trace(navigation_ready?"Official radio navigation ready: QuickPlayMusic(false/true), OpenMusicPlayerView":"Official radio navigation unavailable; retained playback remains active");
+    int ui_result=native_ui_prepare(runtime,domain,image);
+    if(ui_result){char line[96];sprintf_s(line,sizeof(line),"Radio view visibility unavailable: stage=%d",ui_result);trace(line);}
     trace("Exact assembly, method signature, field types and JIT body verified");
     return 0;
 }
@@ -189,19 +207,27 @@ int radio_control(int command) {
     void *self=invoke(instance_method,NULL,NULL,&exception);
     if(exception)return 0;
     if(!self)return command==2||command==3;
+    if(command==6||command==7||command==8){
+        if(!navigation_ready)return 0;
+        unsigned char tips=0;void *check_args[]={&tips};void *enabled_result=invoke(check_method,self,check_args,&exception);
+        if(exception||!enabled_result||!*(unsigned char *)unbox_result(enabled_result)){trace("Official radio is not enabled in this scene");return 0;}
+        if(command==8){invoke(open_method,self,NULL,&exception);trace(exception?"Official radio view raised an exception":"Official radio view requested");}
+        else {unsigned char next=command==7;void *args[]={&next};invoke(quick_method,self,args,&exception);trace(exception?"Official radio navigation raised an exception":next?"Official next track requested":"Official previous track requested");}
+        native_info_refresh(1);native_ui_refresh();return exception==NULL;
+    }
     int32_t handle=-1;unsigned char playing=0;
     read_field(self,handle_field,&handle);read_field(self,playing_field,&playing);
     if(command==2) {
-        native_restore=playing&&handle!=-1;
-        if(!native_restore)return 1;
+        if(!playing||handle==-1)return 1;
+        native_restore=1;
         invoke(pause_method,self,NULL,&exception);
         read_field(self,playing_field,&playing);
         if(exception||playing){native_restore=0;trace("Native pause not accepted; local source not started");return 0;}
-        trace("Native paused for local source");return 1;
+        native_info_refresh(0);trace("Native paused for local source");return 1;
     }
     if(command==3) {
         if(native_restore&&handle!=-1)invoke(resume_method,self,NULL,&exception);
-        native_restore=0;trace("Returned to native source");return exception==NULL;
+        native_restore=0;native_info_refresh(0);trace("Returned to native source");return exception==NULL;
     }
     if(command==1&&handle!=-1) {
         invoke(playing?pause_method:resume_method,self,NULL,&exception);

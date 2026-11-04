@@ -31,10 +31,11 @@ try {
     Run $cc @('/nologo','/W3','/O2','/MT','/c',(Join-Path $mh 'src\buffer.c'),(Join-Path $mh 'src\hook.c'),(Join-Path $mh 'src\trampoline.c'),(Join-Path $mh 'src\hde\hde64.c'))
     Run $cc ($common+@('/utf-8','/EHsc','/std:c++20','/c',(Join-Path $src 'controls.cpp'),(Join-Path $src 'cloud.cpp'),(Join-Path $src 'status.cpp')))
     $libraries=@('/link','/DYNAMICBASE','/NXCOMPAT','user32.lib','mfplay.lib','mfplat.lib','mfuuid.lib','ole32.lib','windowsapp.lib','shell32.lib','normaliz.lib')
-    $bridge=@((Join-Path $src 'bridge.c'),(Join-Path $src 'native_info.c'),'controls.obj','cloud.obj','status.obj')+$objects
+    $bridge=@((Join-Path $src 'bridge.c'),(Join-Path $src 'native_info.c'),(Join-Path $src 'native_ui.c'),'controls.obj','cloud.obj','status.obj')+$objects
     Run $cc ($common+@('/LD',(Join-Path $src 'plugin.c'))+$bridge+@('/Fe:PortableRadioNative-loadlate.asi')+$libraries)
-    Run $csc @('/nologo','/target:winexe','/out:NetEaseImporter.exe','/r:System.Windows.Forms.dll','/r:System.Drawing.dll','/r:System.Net.Http.dll','/r:System.Web.Extensions.dll',(Join-Path $src 'Importer.cs'))
-    Run $csc @('/nologo','/target:winexe','/out:RadioHud.exe','/r:System.Windows.Forms.dll','/r:System.Drawing.dll',(Join-Path $src 'RadioHud.cs'))
+    $uiRefs=@('/r:System.Windows.Forms.dll','/r:System.Drawing.dll','/r:System.Net.Http.dll','/r:System.Web.Extensions.dll')
+    Run $csc (@('/nologo','/target:winexe','/out:NetEaseImporter.exe')+$uiRefs+@((Join-Path $src 'Importer.cs'),(Join-Path $src 'RadioTheme.cs')))
+    Run $csc (@('/nologo','/target:winexe','/main:HudProgram','/out:RadioHud.exe')+$uiRefs+@((Join-Path $src 'RadioHud.cs'),(Join-Path $src 'Importer.cs'),(Join-Path $src 'RadioTheme.cs')))
     foreach ($program in @('NetEaseImporter.exe','RadioHud.exe')) {
     $selfTest=[Diagnostics.Process]::new()
     $selfTest.StartInfo=[Diagnostics.ProcessStartInfo]::new((Join-Path $out $program),'--self-test')

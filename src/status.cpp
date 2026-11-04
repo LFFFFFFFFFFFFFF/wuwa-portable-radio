@@ -36,10 +36,10 @@ void status_start(HMODULE module,const wchar_t *config) {
 void status_publish(const RadioStatus &s,bool reveal) {
     if(path.empty())return;
     std::wstring body=L"Source="+clean(s.source)+L"\r\nTitle="+clean(s.title)+L"\r\nArtist="+clean(s.artist)+
-        L"\r\nState="+clean(s.state)+L"\r\nDetail="+clean(s.detail)+L"\r\n";
+        L"\r\nState="+clean(s.state)+L"\r\nDetail="+clean(s.detail)+L"\r\nViewOpen="+(s.view_open?L"1":L"0")+L"\r\nRiding="+(s.riding?L"1":L"0")+L"\r\n";
     if(body==previous&&!reveal)return;
     std::wstring text=L"[Radio]\r\nPid="+std::to_wstring(GetCurrentProcessId())+L"\r\nSequence="+
-        std::to_wstring(sequence+1)+L"\r\n"+body;
+        std::to_wstring(sequence+1)+L"\r\nControlThread="+std::to_wstring(GetCurrentThreadId())+L"\r\n"+body;
     std::wstring temp=path+L".new";
     FILE *file=nullptr;if(_wfopen_s(&file,temp.c_str(),L"wb")||!file)return;
     unsigned short bom=0xfeff;
@@ -49,6 +49,7 @@ void status_publish(const RadioStatus &s,bool reveal) {
         previous=body;++sequence;
     }else DeleteFileW(temp.c_str());
 }
+DWORD status_hud_pid(){return hud?GetProcessId(hud):0;}
 void status_stop() {
     if(!path.empty())DeleteFileW(path.c_str());
     if(hud){CloseHandle(hud);hud=nullptr;}

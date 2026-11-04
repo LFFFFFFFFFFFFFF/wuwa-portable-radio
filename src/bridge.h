@@ -11,6 +11,7 @@ int radio_enable(void);
 int radio_remove(void);
 void radio_set_enabled(int enabled);
 LONG radio_skipped(void);
+int radio_riding(void);
 /* Commands must run on the observed managed game thread. */
 int radio_control(int command);
 #ifdef __cplusplus

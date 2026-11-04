@@ -1,7 +1,11 @@
 #include "track_info.h"
+#include "keys.h"
 #include <stdio.h>
 #define CHECK(x) do{if(!(x)){printf("FAIL line=%d\n",__LINE__);return 1;}}while(0)
 int main(){
+    CHECK(parse_radio_key(L"-",0)==VK_OEM_MINUS&&parse_radio_key(L"=",0)==VK_OEM_PLUS);
+    CHECK(parse_radio_key(L"·",0)==VK_OEM_3&&parse_radio_key(L"`",0)==VK_OEM_3&&parse_radio_key(L"OEM_3",0)==VK_OEM_3);
+    CHECK(parse_radio_key(L"NONE",VK_F8)==0&&parse_radio_key(L"F8",0)==VK_F8&&parse_radio_key(L"bad",99)==99);
     std::vector<CloudTrack> tracks={{1,L"第一首",L"甲"},{2,L"たぶん",L"YOASOBI"}};
     CloudStatus actual{L"第一首",L"甲",4,true};
     auto display=describe_cloud(actual,tracks,1,tracks[1],true,false);

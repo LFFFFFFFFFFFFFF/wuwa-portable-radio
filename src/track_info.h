@@ -42,8 +42,8 @@ inline CloudDisplay describe_cloud(const CloudStatus &actual,const std::vector<C
         for(size_t i=0;i<tracks.size();++i)if(same_track(normalized,tracks[i])){found=i;break;}
         if(found<tracks.size()){
             result.index=found;
-            card.detail=L"导入列表 "+std::to_wstring(found+1)+L" / "+std::to_wstring(tracks.size())+L" · F10 切换";
-        }else card.detail=L"网易云客户端队列 · F10 切回导入列表";
+            card.detail=L"导入列表 "+std::to_wstring(found+1)+L" / "+std::to_wstring(tracks.size())+L" · - / = 切换";
+        }else card.detail=L"网易云客户端队列 · = 切回导入列表";
         if(!actual.available)card.detail=L"请保持网易云打开，并在设置中开启 SMTC";
     }
     return result;

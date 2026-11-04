@@ -5,6 +5,7 @@
 #include "bridge.h"
 #include "controls.h"
 #include "native_info.h"
+#include "native_ui.h"
 #include <wchar.h>
 typedef void *(*Ptr0)(void);
 typedef void *(*Ptr1)(void *);
@@ -138,12 +139,16 @@ int wmain(int argc,wchar_t **argv) {
     unsigned char alternate=1;
     set_value(model,get_field(model_class,"UseAlternateLanguage"),&alternate);
     native_info_refresh(0);info=native_info_snapshot();CHECK(!wcscmp(info.title,L"测试原生曲目甲"));
-    CHECK(controls_post(4));CHECK(!controls_post(5)); // Coalesce F7 with an existing queued refresh.
+    CHECK(controls_post(4));CHECK(!controls_post(5)); // Coalesce a forced refresh with an existing queued refresh.
     while(PeekMessageW(&msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}
     info=native_info_snapshot();CHECK(!wcscmp(info.title,L"Native track A"));
     alternate=0;set_value(model,get_field(model_class,"UseAlternateLanguage"),&alternate);
     controls_session_end();info=native_info_snapshot();CHECK(!info.observed&&!info.title[0]);
     call("OnEnterVehicle",args);
+    CHECK(radio_control(6));CHECK(get_int("PreviousRequests")==1);CHECK(native_info_snapshot().track_id==504);
+    CHECK(radio_control(7));CHECK(get_int("NextRequests")==1);CHECK(native_info_snapshot().track_id==501);
+    CHECK(radio_control(8));native_ui_refresh();CHECK(get_int("OpenedViews")==1&&native_ui_visible());
+    controls_session_end();CHECK(!native_ui_visible());call("OnEnterVehicle",args);
     puts("PASS: native localized names, real nullable boxing, automatic track changes, pause state, wrong-thread rejection, missing data/exceptions, recovery, message dispatch and session reset");
     /* Stress both ABI paths with changing fields. */
     for(int i=0;i<1000;++i){reset(i,1,1);call("OnLeaveVehicle",args);CHECK(get_int("Pauses")==0);}

@@ -9,6 +9,16 @@ public sealed class MotorcycleMusicPlayerController {
     public bool IsPlaying;
     public bool IsInVehicle;
     public int Pauses, NextTracks, Stops, SeatChanges;
+    public int PreviousRequests,NextRequests,OpenedViews;
+    public bool CheckIsEnable(bool tips){return IsInVehicle;}
+    public void QuickPlayMusic(bool next){
+        if(!CheckIsEnable(true))return;
+        if(next)NextRequests++;else PreviousRequests++;
+        var model=MotorcycleMusicPlayerModel.Instance;
+        int[] queue={501,502,504};int index=System.Array.IndexOf(queue,model.CurPlayMusicId);
+        model.CurPlayMusicId=queue[(index+(next?1:queue.Length-1)+queue.Length)%queue.Length];IsPlaying=true;
+    }
+    public void OpenMusicPlayerView(){if(CheckIsEnable(true)){OpenedViews++;CSharpScript.Game.Ui.UiManager.Instance.Visible=true;}}
     [MethodImpl(MethodImplOptions.NoInlining)]
     public void OnEnterVehicle(VehiclePassengerInfo vehicle,bool seatChange) { IsInVehicle=true; if(seatChange)SeatChanges++; }
     public void PauseMusic() { IsPlaying=false; }
@@ -24,6 +34,18 @@ public sealed class MotorcycleMusicPlayerController {
     public void OnBackLoginView() { StopMusic(); }
     public bool OnClear() { StopMusic(); return true; }
     public void OnMusicEnd() { if (IsPlaying && IsInVehicle) NextTracks++; }
+}
+namespace CSharpScript.Game.Ui {
+    public struct EUiViewName {
+        public string Value;
+        public static readonly EUiViewName MotorcycleMusicPlayerView=new EUiViewName{Value="MotorcycleMusicPlayerView"};
+    }
+    public sealed class UiManager {
+        private static readonly UiManager _Instance=new UiManager();
+        public static UiManager Instance{get{return _Instance;}}
+        public bool Visible;
+        public bool IsViewShow(EUiViewName name){return Visible&&name.Value=="MotorcycleMusicPlayerView";}
+    }
 }
 
 // Handwritten metadata contract, including nullable struct returns and localization.

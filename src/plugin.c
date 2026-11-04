@@ -138,7 +138,7 @@ static DWORD WINAPI install_worker(void *unused) {
 __declspec(dllexport) void InitializeASI(void) {
     if(InterlockedCompareExchange(&once,1,0))return;
     if(!init_paths())return;
-    log_line("Portable radio v2.3 initialized; native track names and portable radio controls");
+    log_line("Portable radio v2.5 initialized; official view, native navigation and add-song entry");
     /* Keep code alive until process exit while a managed method can call its detour. */
     wchar_t module_path[32768];HMODULE pinned;
     DWORD n=GetModuleFileNameW(self_module,module_path,32768);
