@@ -11,7 +11,7 @@ using System.Windows.Forms;
 // Standalone UI process. No game-memory access or graphics injection.
 internal sealed class RadioCard {
     internal string Source="随身电台",Title="等待曲目信息",Artist="",State="",Detail="";
-    internal int Pid,ControlThread; internal long Sequence; internal bool ViewOpen,Riding;
+    internal int Pid,ControlThread; internal long Sequence; internal bool ViewOpen,Riding,BgmEnabled,BgmAvailable,BgmActive;
     internal static Dictionary<string,string> Read(string path) {
         var result=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
         using(var file=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete))
@@ -39,7 +39,7 @@ internal sealed class RadioCard {
            !long.TryParse(Get(values,"Radio.Sequence",""),out revision))throw new InvalidDataException("Status owner/revision mismatch");
         return new RadioCard{Pid=owner,Sequence=revision,ControlThread=Number(values,"Radio.ControlThread",0,0,int.MaxValue),ViewOpen=Get(values,"Radio.ViewOpen","0")=="1",Riding=Get(values,"Radio.Riding","0")=="1",Source=Get(values,"Radio.Source","随身电台"),
             Title=Get(values,"Radio.Title","等待曲目信息"),Artist=Get(values,"Radio.Artist",""),
-            State=Get(values,"Radio.State",""),Detail=Get(values,"Radio.Detail","")};
+            State=Get(values,"Radio.State",""),Detail=Get(values,"Radio.Detail",""),BgmEnabled=Get(values,"Radio.BgmEnabled","1")=="1",BgmAvailable=Get(values,"Radio.BgmAvailable","0")=="1",BgmActive=Get(values,"Radio.BgmActive","0")=="1"};
     }
 }
 
@@ -124,6 +124,10 @@ internal sealed class HudContext:ApplicationContext {
         menu.Font=new Font("Microsoft YaHei UI",10);menu.ForeColor=RadioTheme.Text;menu.Renderer=new ToolStripProfessionalRenderer(new RadioMenuColors());
         menu.Items.Add("游戏内置电台",null,delegate{Send(7);});menu.Items.Add("网易云音乐",null,delegate{Send(6);});menu.Items.Add("本地音乐",null,delegate{Send(8);});menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("＋ 添加歌曲",null,delegate{OpenImporter();});menu.Items.Add("打开官方电台界面  ·",null,delegate{Send(4);});
+        menu.Items.Add(new ToolStripSeparator());var bgm=new ToolStripMenuItem("播放时屏蔽游戏背景音乐");
+        bgm.ToolTipText="控制网易云与本地音乐的背景避让；内置电台沿用官方规则。暂停或停止外部播放后自动恢复。";
+        bgm.Click+=delegate{Send(9);};menu.Items.Add(bgm);
+        menu.Opening+=delegate{bgm.Checked=mini.Card.BgmEnabled;bgm.Enabled=mini.Card.BgmAvailable;bgm.Text=mini.Card.BgmAvailable?"播放时屏蔽游戏背景音乐":"背景音乐屏蔽（接口未就绪）";};
         timer.Interval=150;timer.Tick+=Tick;timer.Start();
     }
     private void Send(int action){if(mini.Card.ControlThread>0)PostThreadMessage((uint)mini.Card.ControlThread,commandMessage,new IntPtr(Process.GetCurrentProcess().Id),new IntPtr(action));}
@@ -159,8 +163,9 @@ internal static class HudProgram {
         }
     }
     internal static int SelfTest(){string file=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"hud-test-"+Guid.NewGuid().ToString("N")+".ini");try{
-        File.WriteAllText(file,"[Radio]\r\nPid=123\r\nSequence=42\r\nControlThread=456\r\nViewOpen=1\r\nRiding=0\r\nSource=网易云\r\nTitle=たぶん = [Live] & 你好\r\nArtist=YOASOBI\r\nState=切歌待确认\r\n",Encoding.Unicode);
+        File.WriteAllText(file,"[Radio]\r\nPid=123\r\nSequence=42\r\nControlThread=456\r\nViewOpen=1\r\nRiding=0\r\nBgmEnabled=1\r\nBgmAvailable=1\r\nBgmActive=0\r\nSource=网易云\r\nTitle=たぶん = [Live] & 你好\r\nArtist=YOASOBI\r\nState=切歌待确认\r\n",Encoding.Unicode);
         var card=RadioCard.Load(file,123);if(card.Title!="たぶん = [Live] & 你好"||!card.ViewOpen||card.Riding||card.ControlThread!=456)throw new Exception("HUD contract");
+        if(!card.BgmEnabled||!card.BgmAvailable||card.BgmActive)throw new Exception("BGM state contract");
         bool rejected=false;try{RadioCard.Load(file,124);}catch(InvalidDataException){rejected=true;}if(!rejected)throw new Exception("Wrong PID");
         using(var bitmap=new Bitmap(580,76))using(var g=Graphics.FromImage(bitmap)){card.Title=new string('歌',400);HudWindow.PaintCard(g,new Rectangle(0,0,580,76),card,false);}
         Console.WriteLine("PASS: HUD Unicode/PID/visibility/worker contract and long-title rendering");return 0;

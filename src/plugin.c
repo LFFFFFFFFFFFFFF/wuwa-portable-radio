@@ -6,6 +6,7 @@
 #include <string.h>
 #include "bridge.h"
 #include "controls.h"
+#include "native_bgm.h"
 
 typedef void *(*Ptr0)(void);
 typedef void *(*Ptr1)(void *);
@@ -19,10 +20,12 @@ static wchar_t log_path[32768];
 
 #ifdef RADIO_LAB
 #include "fixture_identity.h"
+#define EXPECTED_CORE_GUID EXPECTED_GUID
 #define INITIAL_DELAY 10
 #define POLL_DELAY 20
 #else
-#define EXPECTED_GUID "398499d1-a649-4e50-8ac2-270d7cbbc858"
+#define EXPECTED_GUID "630e3143-f5eb-42e7-940c-5f1af45f3fb6"
+#define EXPECTED_CORE_GUID "f2c9e329-0f5e-4676-9aa1-d7c93bbdb1d1"
 #define EXPECTED_TOKEN 0x060116c2u
 #define INITIAL_DELAY 15000
 #define POLL_DELAY 2000
@@ -57,7 +60,7 @@ static int init_paths(void) {
 #endif
 }
 
-struct Search { void *image; unsigned matching; unsigned other; };
+struct Search { void *image,*audio; unsigned matching,other,audio_matches,audio_other; };
 static void find_game(void *assembly, void *context) {
     struct Search *s = context;
     Ptr1 get_name = (Ptr1)GetProcAddress(runtime,"mono_assembly_get_name");
@@ -66,11 +69,18 @@ static void find_game(void *assembly, void *context) {
     String1 guid = (String1)GetProcAddress(runtime,"mono_image_get_guid");
     void *aname = get_name(assembly);
     const char *simple = aname ? name(aname) : NULL;
-    if (!simple || strcmp(simple,"Aki.Game")) return;
+    if (!simple || (strcmp(simple,"Aki.Game")&&strcmp(simple,"Aki.Core"))) return;
     void *image = get_image(assembly);
     const char *id = image ? guid(image) : NULL;
+    if(!strcmp(simple,"Aki.Core")){
+        if(id&&!_stricmp(id,EXPECTED_CORE_GUID)){s->audio=image;++s->audio_matches;}else ++s->audio_other;
+        return;
+    }
     if (id && !_stricmp(id,EXPECTED_GUID)) { s->image=image; ++s->matching; }
     else ++s->other;
+#ifdef RADIO_LAB
+    s->audio=s->image;s->audio_matches=s->matching;
+#endif
     /* No type loading or game invocation within assembly enumeration. */
 }
 
@@ -106,6 +116,10 @@ static DWORD WINAPI install_worker(void *unused) {
         int prepared=-1;
         if(search.matching==1 && search.other==0)
             prepared=radio_prepare(runtime,domain,search.image,EXPECTED_GUID,EXPECTED_TOKEN,log_line);
+        if(!prepared){
+            int bgm_result=search.audio_matches==1&&!search.audio_other?bgm_prepare(runtime,domain,search.audio,EXPECTED_CORE_GUID,log_line):1;
+            if(bgm_result){char line[96];sprintf_s(line,sizeof(line),"BGM interface unavailable: stage=%d; no routing changed",bgm_result);log_line(line);}
+        }
         detach(thread);
         if(search.other || search.matching>1) {
             log_line("Assembly identity/count mismatch; disabled without hooking");break;
@@ -138,7 +152,7 @@ static DWORD WINAPI install_worker(void *unused) {
 __declspec(dllexport) void InitializeASI(void) {
     if(InterlockedCompareExchange(&once,1,0))return;
     if(!init_paths())return;
-    log_line("Portable radio v2.5 initialized; official view, native navigation and add-song entry");
+    log_line("Portable radio v2.6 initialized; BGM suppression and audited 3.7.18 compatibility");
     /* Keep code alive until process exit while a managed method can call its detour. */
     wchar_t module_path[32768];HMODULE pinned;
     DWORD n=GetModuleFileNameW(self_module,module_path,32768);

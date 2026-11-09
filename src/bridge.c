@@ -200,6 +200,12 @@ int radio_remove(void) {
 }
 void radio_set_enabled(int value) { InterlockedExchange(&enabled, value != 0); }
 LONG radio_skipped(void) { return InterlockedCompareExchange(&skips, 0, 0); }
+int radio_native_playing(void) {
+    if(GetCurrentThreadId()!=controls_game_thread()||!invoke||!instance_method)return 0;
+    void *exception=NULL,*self=invoke(instance_method,NULL,NULL,&exception);if(exception||!self)return 0;
+    int32_t stream=-1;unsigned char playing=0;read_field(self,handle_field,&stream);read_field(self,playing_field,&playing);
+    return stream!=-1&&playing;
+}
 
 int radio_control(int command) {
     if(GetCurrentThreadId()!=controls_game_thread()) {trace("Rejected control on wrong thread");return 0;}

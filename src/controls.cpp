@@ -13,6 +13,7 @@
 #include "track_info.h"
 #include "native_info.h"
 #include "native_ui.h"
+#include "native_bgm.h"
 #include "keys.h"
 #include <shellapi.h>
 
@@ -20,6 +21,7 @@ static RadioLog logger;
 static HANDLE worker;
 static volatile LONG stop_worker, game_thread, session_active, session_end, ack;
 static volatile LONG info_inflight, info_force;
+static volatile LONG bgm_inflight;
 static HHOOK message_hook;
 static UINT control_message;
 static wchar_t config_path[32768];
@@ -67,6 +69,9 @@ static LRESULT CALLBACK messages(int code,WPARAM removed,LPARAM data) {
                 if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)native_info_refresh(force);
                 if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)native_ui_refresh();
                 InterlockedExchange(&info_inflight,0);
+            }else if(m->lParam==10){
+                if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)bgm_sync(radio_native_playing());
+                InterlockedExchange(&bgm_inflight,0);
             }else{
                 if(GetCurrentThreadId()==(DWORD)game_thread&&session_active)result=radio_control((int)m->lParam);
                 InterlockedExchange(&ack,result ? (LONG)m->lParam : -1);
@@ -89,6 +94,11 @@ extern "C" void controls_capture(void) {
     InterlockedExchange(&session_active,1);
 }
 extern "C" int controls_post(int command) {
+    if(command==10){
+        if(!game_thread||!message_hook||!session_active||InterlockedCompareExchange(&bgm_inflight,1,0))return 0;
+        if(PostThreadMessageW((DWORD)game_thread,control_message,0x50524144,command))return 1;
+        InterlockedExchange(&bgm_inflight,0);return 0;
+    }
     if(command==4||command==5){
         if(command==5)InterlockedExchange(&info_force,1);
         if(!game_thread||!message_hook||!session_active||InterlockedCompareExchange(&info_inflight,1,0))return 0;
@@ -101,6 +111,7 @@ extern "C" int controls_post(int command) {
 }
 extern "C" DWORD controls_game_thread(void) { return (DWORD)game_thread; }
 extern "C" void controls_session_end(void) {
+    bgm_request(0,0);bgm_release(0);
     InterlockedExchange(&session_active,0);InterlockedExchange(&session_end,1);
     InterlockedExchange(&info_force,0);
     native_info_reset();
@@ -208,9 +219,10 @@ static DWORD WINAPI run(void *) {
     if(!audio_ready)trace("Local playback unavailable; native radio controls remain active");
     wchar_t source[40];GetPrivateProfileStringW(L"Music",L"Source",L"NetEase",source,40,config_path);
     bool prefer_cloud=_wcsicmp(source,L"Local")!=0, cloud_mode=false;
+    bool suppress_bgm=GetPrivateProfileIntW(L"Audio",L"SuppressBackgroundMusic",1,config_path)!=0;
     int keys[6]={read_key(L"Pause",L"NONE",0),read_key(L"Source",L"NONE",0),read_key(L"Next",L"=",VK_OEM_PLUS),read_key(L"Import",L"NONE",0),read_key(L"Open",L"OEM_3",VK_OEM_3),read_key(L"Previous",L"-",VK_OEM_MINUS)};
     bool held[6]={};int pending_switch=0;ULONGLONG pending_since=0,next_info=0;
-    ULONGLONG library_check=0,library_stamp=0;
+    ULONGLONG library_check=0,library_stamp=0,next_bgm=0;
     UINT ui_message=RegisterWindowMessageW(L"PortableRadio.UI.Commands.v2.4");
     MSG ui;PeekMessageW(&ui,NULL,0,0,PM_NOREMOVE);
     cloud_watch_start();
@@ -238,7 +250,12 @@ static DWORD WINAPI run(void *) {
         }
         int ui_action=0;
         while(PeekMessageW(&ui,NULL,ui_message,ui_message,PM_REMOVE))
-            if(ui.wParam==status_hud_pid()&&(foreground_pid==GetCurrentProcessId()||foreground_pid==status_hud_pid())&&ui.lParam>=1&&ui.lParam<=8)ui_action=(int)ui.lParam;
+            if(ui.wParam==status_hud_pid()&&(foreground_pid==GetCurrentProcessId()||foreground_pid==status_hud_pid())&&ui.lParam>=1&&ui.lParam<=9)ui_action=(int)ui.lParam;
+        if(ui_action==9){
+            suppress_bgm=!suppress_bgm;
+            if(!WritePrivateProfileStringW(L"Audio",L"SuppressBackgroundMusic",suppress_bgm?L"1":L"0",config_path))trace("BGM option changed for this session; configuration could not be saved");
+            trace(suppress_bgm?"Automatic external BGM suppression enabled":"Automatic external BGM suppression disabled");ui_action=0;
+        }
         for(int i=0;i<6;++i) {
             bool down=keys[i]>0&&keys[i]<256&&(GetAsyncKeyState(keys[i])&0x8000)!=0;
             bool plain=!(GetAsyncKeyState(VK_CONTROL)&0x8000)&&!(GetAsyncKeyState(VK_MENU)&0x8000)&&!(GetAsyncKeyState(VK_SHIFT)&0x8000);
@@ -275,9 +292,14 @@ static DWORD WINAPI run(void *) {
             NativeRadioInfo info=native_info_snapshot();
             if(info.active&&info.playing){if(cloud_mode)cloud_command(2);if(p.local)p.stop();cloud_mode=false;cloud_request_pending=false;trace("Official view selected native playback; external source paused");}
         }
+        CloudStatus actual_cloud=cloud_mode?cloud_status():CloudStatus{};
+        MFP_MEDIAPLAYER_STATE local_state=MFP_MEDIAPLAYER_STATE_EMPTY;
+        bool actual_local=p.local&&audio_ready&&SUCCEEDED(p.media->GetState(&local_state))&&local_state==MFP_MEDIAPLAYER_STATE_PLAYING;
+        bgm_request(suppress_bgm,session_active&&(cloud_mode?(actual_cloud.available&&actual_cloud.playback==4):actual_local));
+        if(bgm_available()&&GetTickCount64()>=next_bgm){controls_post(10);next_bgm=GetTickCount64()+250;}
         RadioStatus display;
         if(cloud_mode) {
-            auto info=describe_cloud(cloud_status(),cloud_tracks,cloud_index,requested_track,cloud_request_pending,
+            auto info=describe_cloud(actual_cloud,cloud_tracks,cloud_index,requested_track,cloud_request_pending,
                                      GetTickCount64()-requested_at>=12000);
             display=info.card;cloud_index=info.index;cloud_request_pending=info.pending;
         }else if(p.local){
@@ -296,6 +318,7 @@ static DWORD WINAPI run(void *) {
         if(GetTickCount64()<notice_until)display.detail=notice;
         display.view_open=native_ui_visible()!=0;
         display.riding=radio_riding()!=0;
+        display.bgm_enabled=suppress_bgm;display.bgm_available=bgm_available()!=0;display.bgm_active=bgm_active()!=0;
         status_publish(display,reveal);
         Sleep(20);
     }
@@ -311,6 +334,7 @@ extern "C" void controls_start(HMODULE module,const wchar_t *config,RadioLog log
     worker=CreateThread(NULL,0,run,NULL,0,NULL);
 }
 extern "C" void controls_shutdown(void) {
+    bgm_request(0,0);bgm_release(radio_native_playing());
     InterlockedExchange(&stop_worker,1);
     if(worker){WaitForSingleObject(worker,5000);CloseHandle(worker);worker=NULL;}
     if(message_hook){UnhookWindowsHookEx(message_hook);message_hook=NULL;}

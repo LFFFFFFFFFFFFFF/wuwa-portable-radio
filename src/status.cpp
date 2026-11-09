@@ -36,7 +36,8 @@ void status_start(HMODULE module,const wchar_t *config) {
 void status_publish(const RadioStatus &s,bool reveal) {
     if(path.empty())return;
     std::wstring body=L"Source="+clean(s.source)+L"\r\nTitle="+clean(s.title)+L"\r\nArtist="+clean(s.artist)+
-        L"\r\nState="+clean(s.state)+L"\r\nDetail="+clean(s.detail)+L"\r\nViewOpen="+(s.view_open?L"1":L"0")+L"\r\nRiding="+(s.riding?L"1":L"0")+L"\r\n";
+        L"\r\nState="+clean(s.state)+L"\r\nDetail="+clean(s.detail)+L"\r\nViewOpen="+(s.view_open?L"1":L"0")+L"\r\nRiding="+(s.riding?L"1":L"0")+
+        L"\r\nBgmEnabled="+(s.bgm_enabled?L"1":L"0")+L"\r\nBgmAvailable="+(s.bgm_available?L"1":L"0")+L"\r\nBgmActive="+(s.bgm_active?L"1":L"0")+L"\r\n";
     if(body==previous&&!reveal)return;
     std::wstring text=L"[Radio]\r\nPid="+std::to_wstring(GetCurrentProcessId())+L"\r\nSequence="+
         std::to_wstring(sequence+1)+L"\r\nControlThread="+std::to_wstring(GetCurrentThreadId())+L"\r\n"+body;

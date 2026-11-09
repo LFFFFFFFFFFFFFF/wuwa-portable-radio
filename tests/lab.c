@@ -6,6 +6,7 @@
 #include "controls.h"
 #include "native_info.h"
 #include "native_ui.h"
+#include "native_bgm.h"
 #include <wchar.h>
 typedef void *(*Ptr0)(void);
 typedef void *(*Ptr1)(void *);
@@ -37,6 +38,7 @@ static DWORD WINAPI prepare_worker(void *unused) {
     Void1 detach = (Void1)GetProcAddress(rt,"mono_thread_detach");
     void *thread = attach(domain);
     prepare_result = radio_prepare(rt,domain,image,guid,token,trace);
+    if(!prepare_result)prepare_result=bgm_prepare(rt,domain,image,guid,trace);
     detach(thread);
     /* Enable only after leaving Mono, so this thread does not block a Mono GC. */
     enable_result = prepare_result ? -1 : radio_enable();
@@ -56,6 +58,7 @@ static void reset(int handle, int playing, int vehicle) {
     set_int("Pauses",0);set_int("NextTracks",0);set_int("Stops",0);set_int("SeatChanges",0);
 }
 static DWORD WINAPI wrong_info_thread(void *unused){(void)unused;native_info_refresh(1);return 0;}
+static DWORD WINAPI wrong_bgm_thread(void *unused){(void)unused;bgm_sync(0);return 0;}
 #define CHECK(x) do { if(!(x)) { printf("CHECK FAILED line=%d\n",__LINE__);return 40; } } while(0)
 int wmain(int argc,wchar_t **argv) {
     if(argc!=4)return 2;
@@ -73,6 +76,7 @@ int wmain(int argc,wchar_t **argv) {
     read_value=(FieldValue)GetProcAddress(rt,"mono_field_get_value");invoke=(Invoke)GetProcAddress(rt,"mono_runtime_invoke");
     klass=get_class(image,"","MotorcycleMusicPlayerController");
     token=((Uint)GetProcAddress(rt,"mono_method_get_token"))(get_method(klass,"OnLeaveVehicle",2));
+    CHECK(bgm_prepare(rt,domain,image,"00000000-0000-0000-0000-000000000000",trace)==2);
     CHECK(radio_prepare(rt,domain,image,"00000000-0000-0000-0000-000000000000",token,trace)==2);
     CHECK(radio_prepare(rt,domain,image,guid,token+1,trace)==4);
     HANDLE worker=CreateThread(NULL,0,prepare_worker,NULL,0,NULL);CHECK(worker!=NULL);
@@ -150,6 +154,27 @@ int wmain(int argc,wchar_t **argv) {
     CHECK(radio_control(8));native_ui_refresh();CHECK(get_int("OpenedViews")==1&&native_ui_visible());
     controls_session_end();CHECK(!native_ui_visible());call("OnEnterVehicle",args);
     puts("PASS: native localized names, real nullable boxing, automatic track changes, pause state, wrong-thread rejection, missing data/exceptions, recovery, message dispatch and session reset");
+    /* Routing ownership follows actual external playback, independently of native radio. */
+    void *audio_class=get_class(image,"","AudioSystem");
+    exception=NULL;void *audio=invoke(get_method(audio_class,"get_Instance",0),NULL,NULL,&exception);CHECK(audio&&!exception);
+    uint32_t audio_root=((NewRoot)GetProcAddress(rt,"mono_gchandle_new"))(audio,1);CHECK(audio_root);
+    void *calls_field=get_field(audio_class,"StateCalls"),*state_field=get_field(audio_class,"RadioState"),*fail_field=get_field(audio_class,"FailState");
+    int32_t calls=0;unsigned char state_value=0,fail=1;
+    CHECK(bgm_available());bgm_request(1,0);bgm_sync(1);read_value(audio,calls_field,&calls);CHECK(!calls&&!bgm_active());
+    bgm_request(1,1);
+    HANDLE wrong_bgm=CreateThread(NULL,0,wrong_bgm_thread,NULL,0,NULL);CHECK(wrong_bgm);CHECK(WaitForSingleObject(wrong_bgm,3000)==WAIT_OBJECT_0);CloseHandle(wrong_bgm);
+    read_value(audio,calls_field,&calls);CHECK(!calls);
+    bgm_sync(0);read_value(audio,state_field,&state_value);CHECK(bgm_active()&&state_value);
+    bgm_request(1,0);bgm_sync(0);read_value(audio,state_field,&state_value);CHECK(!bgm_active()&&!state_value);
+    bgm_request(1,1);bgm_sync(0);CHECK(bgm_active());
+    bgm_request(0,1);bgm_sync(1);read_value(audio,state_field,&state_value);CHECK(!bgm_active()&&state_value); // Preserve active native routing.
+    bgm_request(1,1);bgm_sync(0);set_value(audio,fail_field,&fail);bgm_request(1,0);bgm_sync(0);CHECK(bgm_active());
+    fail=0;set_value(audio,fail_field,&fail);bgm_sync(0);CHECK(!bgm_active());
+    bgm_request(1,1);bgm_sync(0);CHECK(bgm_active());controls_session_end();CHECK(!bgm_active());
+    float voice=0,effects=0,radio=0;read_value(audio,get_field(audio_class,"VoiceVolume"),&voice);read_value(audio,get_field(audio_class,"EffectsVolume"),&effects);read_value(audio,get_field(audio_class,"RadioVolume"),&radio);
+    CHECK(voice==0.7f&&effects==0.8f&&radio==0.6f);
+    ((void (*)(uint32_t))GetProcAddress(rt,"mono_gchandle_free"))(audio_root);
+    puts("PASS: BGM routing on playback, pause/disconnect release, option off, native routing preservation, wrong-thread rejection, failed-restore retry, session cleanup and untouched volume fields");
     /* Stress both ABI paths with changing fields. */
     for(int i=0;i<1000;++i){reset(i,1,1);call("OnLeaveVehicle",args);CHECK(get_int("Pauses")==0);}
     CHECK(radio_remove()==0);reset(123,1,1);call("OnLeaveVehicle",args);CHECK(get_int("Pauses")==1);

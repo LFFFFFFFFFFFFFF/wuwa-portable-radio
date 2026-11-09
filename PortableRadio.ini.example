@@ -18,3 +18,6 @@ Enabled=1
 ShowSeconds=6
 AlwaysVisible=1
 Margin=24
+
+[Audio]
+SuppressBackgroundMusic=1

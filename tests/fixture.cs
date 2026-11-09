@@ -67,6 +67,19 @@ public sealed class PhonographConfig {
         return null;
     }
 }
+// Synthetic AudioSystem contract. No real engine, audio device or volume changes.
+public sealed class AudioSystem {
+    private static readonly AudioSystem _instance=new AudioSystem();
+    public static AudioSystem Instance{get{return _instance;}}
+    public int StateCalls;
+    public bool RadioState,FailState;
+    public float VoiceVolume=0.7f,EffectsVolume=0.8f,RadioVolume=0.6f;
+    public void SetState(string group,string state,bool validate){
+        if(FailState)throw new System.InvalidOperationException("Synthetic routing failure");
+        if(!validate||group!="system_motor_radio"||(state!="playing"&&state!="none"))throw new System.ArgumentException("Unexpected audio state");
+        RadioState=state=="playing";StateCalls++;
+    }
+}
 namespace Aki.Config {
     public struct PhonographMusic {
         private string title;

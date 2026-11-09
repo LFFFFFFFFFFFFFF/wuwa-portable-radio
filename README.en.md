@@ -22,6 +22,14 @@ The game-styled add-song panel uses a vinyl sleeve, translucent track rows and a
 
 Native titles use the current game track ID/configuration/localization. NetEase titles use the client's actual media session, with pending switches shown explicitly. Local tracks show filenames. Windowed/borderless mode is required for reliable add-on visibility. Natural track-end playback still follows the NetEase client's own queue; `-`/`=` follow the imported list. Local MP3/WAV playback remains available from the source menu.
 
+## Background music suppression
+
+The source/right-click menu has a checked-by-default **Suppress game background music during playback** option, persisted as `[Audio] SuppressBackgroundMusic=0/1`. It follows actual NetEase SMTC Playing state or the local player's actual state, rather than a URI launch acknowledgement.
+
+External playback borrows the game's existing `system_motor_radio=playing` routing. Pause, stop, lost media sessions, disabling the option and session cleanup release the override, preserving an actively playing native radio's routing. The native source keeps its own official behavior. Master, speech, effects and radio volume settings are not changed. Routing calls run on the observed game thread and add no game detours. Actual acoustic behavior still needs a live game test.
+
+v2.6 audits the 3.7.18 game assembly and additionally requires `Aki.Core` MVID `f2c9e329-0f5e-4676-9aa1-d7c93bbdb1d1` for this optional interface. Mismatch leaves routing unchanged.
+
 ## Build
 
 Install PowerShell 7, Visual Studio Build Tools with Desktop development with C++, a Windows 10/11 SDK with C++/WinRT, and the .NET Framework 4.x compiler.
@@ -40,7 +48,7 @@ With the game fully closed, back up `OptiScaler.ini`, copy the built ASI, import
 
 Copy `PortableRadio.ini.example` to `Client/Saved/Config/PortableRadio.ini`. Use UTF-16 if adding non-ASCII paths. Keep the official NetEase client logged in with SMTC enabled, then start the game normally.
 
-The code requires the audited assembly MVID `398499d1-a649-4e50-8ac2-270d7cbbc858`, method token, signatures, field types and a verified distinct JIT body. Mismatches refuse installation. Do not remove compatibility checks to force support for another client.
+The code requires the audited assembly MVID `630e3143-f5eb-42e7-940c-5f1af45f3fb6`, method token, signatures, field types and a verified distinct JIT body. Mismatches refuse installation. Do not remove compatibility checks to force support for another client.
 
 The Add songs button opens the themed importer: paste a song or public-playlist link, preview it, then append it to the external list without replacing existing tracks. Standalone importer usage can pass `--library "<path>"`.
 
