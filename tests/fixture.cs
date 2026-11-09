@@ -1,6 +1,21 @@
 // Synthetic audio/controller lifecycle. Contains no game code or actual audio.
 using System.Runtime.CompilerServices;
 public sealed class VehiclePassengerInfo { }
+// Handwritten scene lifecycle used to verify attachment without any vehicle event.
+public sealed class GameModeModel {
+    private static readonly GameModeModel _instance=new GameModeModel();
+    public static GameModeModel Instance{get{return _instance;}}
+    public bool Ready,IsLoading,HasData,FailRead;
+    public bool WorldDoneAndLoadingClosed{get{if(FailRead)throw new System.InvalidOperationException("Synthetic scene failure");return Ready;}}
+    public bool Loading{get{return IsLoading;}}
+    public bool HasGameModeData{get{return HasData;}}
+}
+public sealed class GameModeController {
+    public int Ticks;
+    public float LastDelta;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void OnTick(float delta){LastDelta=delta;Ticks++;}
+}
 public sealed class MotorcycleMusicPlayerController {
     private static MotorcycleMusicPlayerController _Instance;
     public static MotorcycleMusicPlayerController Instance { get { return _Instance; } }
@@ -10,7 +25,8 @@ public sealed class MotorcycleMusicPlayerController {
     public bool IsInVehicle;
     public int Pauses, NextTracks, Stops, SeatChanges;
     public int PreviousRequests,NextRequests,OpenedViews;
-    public bool CheckIsEnable(bool tips){return IsInVehicle;}
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public bool CheckIsEnable(bool tips){return MotorcycleMusicPlayerModel.Instance.IsEnable&&IsInVehicle;}
     public void QuickPlayMusic(bool next){
         if(!CheckIsEnable(true))return;
         if(next)NextRequests++;else PreviousRequests++;
@@ -54,6 +70,8 @@ public sealed class MotorcycleMusicPlayerModel {
     public static MotorcycleMusicPlayerModel Instance { get { return _Instance; } }
     public int CurPlayMusicId=501;
     public bool UseAlternateLanguage;
+    public bool Enabled=true;
+    public bool IsEnable{get{return Enabled;}}
     public static void EnsureCreated(){if(_Instance==null)_Instance=new MotorcycleMusicPlayerModel();}
 }
 public sealed class PhonographConfig {

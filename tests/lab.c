@@ -83,11 +83,59 @@ int wmain(int argc,wchar_t **argv) {
     CHECK(WaitForSingleObject(worker,10000)==WAIT_OBJECT_0);CloseHandle(worker);
     printf("prepare=%d enable=%d\n",prepare_result,enable_result);CHECK(!prepare_result&&!enable_result);
     typedef void *(*NewObject)(void *,void *);
+    typedef uint32_t (*NewRoot)(void *,int);
+    /* No radio controller or vehicle event exists during this entire scene test. */
+    void *scene_class=get_class(image,"","GameModeController"),*scene_model_class=get_class(image,"","GameModeModel"),*scene_exception=NULL;
+    void *scene=((NewObject)GetProcAddress(rt,"mono_object_new"))(domain,scene_class);
+    ((Void1)GetProcAddress(rt,"mono_runtime_object_init"))(scene);
+    uint32_t scene_root=((NewRoot)GetProcAddress(rt,"mono_gchandle_new"))(scene,1);CHECK(scene_root);
+    void *scene_model=invoke(get_method(scene_model_class,"get_Instance",0),NULL,NULL,&scene_exception);CHECK(scene_model&&!scene_exception);
+    uint32_t scene_model_root=((NewRoot)GetProcAddress(rt,"mono_gchandle_new"))(scene_model,1);CHECK(scene_model_root);
+    void *tick=get_method(scene_class,"OnTick",1);float delta=0.016f;void *tick_args[]={&delta};unsigned char yes=1,no=0;
+    invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&!controls_game_thread()&&!controls_post(2));
+    set_value(scene_model,get_field(scene_model_class,"Ready"),&yes);set_value(scene_model,get_field(scene_model_class,"HasData"),&yes);
+    set_value(scene_model,get_field(scene_model_class,"IsLoading"),&yes);
+    Sleep(260);invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&!controls_game_thread());
+    set_value(scene_model,get_field(scene_model_class,"IsLoading"),&no);set_value(scene_model,get_field(scene_model_class,"HasData"),&no);
+    Sleep(260);invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&!controls_game_thread());
+    set_value(scene_model,get_field(scene_model_class,"HasData"),&yes);
+    Sleep(260);invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&controls_game_thread()==GetCurrentThreadId()&&controls_post(2));
+    MSG scene_msg;while(PeekMessageW(&scene_msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&scene_msg);DispatchMessageW(&scene_msg);}
+    bgm_request(1,1);CHECK(controls_post(10));
+    while(PeekMessageW(&scene_msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&scene_msg);DispatchMessageW(&scene_msg);}CHECK(bgm_active());
+    set_value(scene_model,get_field(scene_model_class,"FailRead"),&yes);
+    Sleep(260);invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&!bgm_active()&&!controls_post(2));
+    set_value(scene_model,get_field(scene_model_class,"FailRead"),&no);
+    Sleep(260);invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&controls_post(2));
+    while(PeekMessageW(&scene_msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&scene_msg);DispatchMessageW(&scene_msg);}
+    set_value(scene_model,get_field(scene_model_class,"Ready"),&no);
+    Sleep(260);invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&!controls_post(2));
+    int32_t ticks=0;float observed_delta=0;read_value(scene,get_field(scene_class,"Ticks"),&ticks);read_value(scene,get_field(scene_class,"LastDelta"),&observed_delta);
+    CHECK(ticks==7&&observed_delta==delta);
+    puts("PASS: automatic ready-scene attachment and BGM control without any radio controller/vehicle event; loading/data guards, exception cleanup, re-entry and original tick preserved");
     instance=((NewObject)GetProcAddress(rt,"mono_object_new"))(domain,klass);
     ((Void1)GetProcAddress(rt,"mono_runtime_object_init"))(instance);
     /* Root the synthetic instance across managed/native boundaries. */
-    typedef uint32_t (*NewRoot)(void *,int);
     uint32_t root=((NewRoot)GetProcAddress(rt,"mono_gchandle_new"))(instance,1);
+    set_value(scene_model,get_field(scene_model_class,"Ready"),&yes);
+    Sleep(260);invoke(tick,scene,tick_args,&scene_exception);CHECK(!scene_exception&&controls_ready()&&!get_bool("IsInVehicle"));
+    CHECK(controls_post(8));MSG foot;while(PeekMessageW(&foot,NULL,0,0,PM_REMOVE)){TranslateMessage(&foot);DispatchMessageW(&foot);}
+    CHECK(get_int("OpenedViews")==1&&!get_bool("IsInVehicle"));
+    CHECK(radio_control(6)&&radio_control(7)&&get_int("PreviousRequests")==1&&get_int("NextRequests")==1&&!get_bool("IsInVehicle"));
+    void *unlock_class=get_class(image,"","MotorcycleMusicPlayerModel"),*unlock_exception=NULL;
+    void *unlock_model=invoke(get_method(unlock_class,"get_Instance",0),NULL,NULL,&unlock_exception);CHECK(unlock_model&&!unlock_exception);
+    uint32_t unlock_root=((NewRoot)GetProcAddress(rt,"mono_gchandle_new"))(unlock_model,1);CHECK(unlock_root);
+    set_value(unlock_model,get_field(unlock_class,"Enabled"),&no);CHECK(!radio_control(8)&&!radio_control(7)&&get_int("OpenedViews")==1);
+    set_value(unlock_model,get_field(unlock_class,"Enabled"),&yes);
+    set_int("OpenedViews",0);set_int("PreviousRequests",0);set_int("NextRequests",0);controls_session_end();
+    CHECK(!radio_control(8)); // Original riding check applies while the scene is inactive.
+    ((void (*)(uint32_t))GetProcAddress(rt,"mono_gchandle_free"))(unlock_root);
+    ((void (*)(uint32_t))GetProcAddress(rt,"mono_gchandle_free"))(scene_model_root);((void (*)(uint32_t))GetProcAddress(rt,"mono_gchandle_free"))(scene_root);
+    puts("PASS: official view and previous/next work on foot before any vehicle event, without changing riding state; native enable/unlock and inactive-scene guards retained");
+    /* A command queued in the previous scene must not affect a new radio stream. */
+    controls_capture();reset(123,1,0);CHECK(controls_post(1));controls_session_end();controls_capture();
+    MSG stale;while(PeekMessageW(&stale,NULL,0,0,PM_REMOVE)){TranslateMessage(&stale);DispatchMessageW(&stale);}
+    CHECK(get_bool("IsPlaying"));puts("PASS: queued commands from an ended scene are discarded after re-entry");
     void *passenger=NULL;unsigned char seat_change=0;void *args[]={passenger,&seat_change};
     reset(123,1,1);call("OnLeaveVehicle",args);
     CHECK(get_bool("IsPlaying")&&get_bool("IsInVehicle")&&get_int("CurHandleId")==123&&get_int("Pauses")==0);
@@ -160,6 +208,7 @@ int wmain(int argc,wchar_t **argv) {
     uint32_t audio_root=((NewRoot)GetProcAddress(rt,"mono_gchandle_new"))(audio,1);CHECK(audio_root);
     void *calls_field=get_field(audio_class,"StateCalls"),*state_field=get_field(audio_class,"RadioState"),*fail_field=get_field(audio_class,"FailState");
     int32_t calls=0;unsigned char state_value=0,fail=1;
+    set_value(audio,calls_field,&calls); // Start this section after the scene-attachment audio checks.
     CHECK(bgm_available());bgm_request(1,0);bgm_sync(1);read_value(audio,calls_field,&calls);CHECK(!calls&&!bgm_active());
     bgm_request(1,1);
     HANDLE wrong_bgm=CreateThread(NULL,0,wrong_bgm_thread,NULL,0,NULL);CHECK(wrong_bgm);CHECK(WaitForSingleObject(wrong_bgm,3000)==WAIT_OBJECT_0);CloseHandle(wrong_bgm);

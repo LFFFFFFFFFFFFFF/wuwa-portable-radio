@@ -27,12 +27,21 @@ static volatile LONG enabled = 1, skips;
 static int hook_created, hook_enabled;
 static RadioLog logger;
 typedef void (*ObjectFn)(void *);
+typedef void (*TickFn)(void *,float);
 typedef unsigned char (*ClearFn)(void *);
+typedef unsigned char (*CheckFn)(void *,int);
 typedef void *(*InvokeFn)(void *,void *,void **,void **);
 static LeaveFn original_enter;
 static ObjectFn original_login;
 static ClearFn original_clear;
-static void *extra_targets[3], *pause_method, *resume_method, *instance_method;
+static TickFn original_tick;
+static CheckFn original_check;
+static void *extra_targets[5], *pause_method, *resume_method, *instance_method;
+static void *music_model_instance,*music_enabled;
+static void *scene_instance,*scene_ready,*scene_loading,*scene_data;
+static uint32_t (*scene_pin)(void *,int);
+static void (*scene_unpin)(uint32_t);
+static ULONGLONG next_scene_check;
 static InvokeFn invoke;
 static int native_restore;
 static void *quick_method,*open_method,*check_method;
@@ -43,6 +52,41 @@ int radio_riding(void){return (int)InterlockedCompareExchange(&riding,0,0);}
 static void enter_detour(void *self,void *passenger,int seat_change) { InterlockedExchange(&riding,1);controls_capture();original_enter(self,passenger,seat_change); }
 static void login_detour(void *self) { InterlockedExchange(&riding,0);native_restore=0;controls_session_end();original_login(self); }
 static unsigned char clear_detour(void *self) { InterlockedExchange(&riding,0);native_restore=0;controls_session_end();return original_clear(self); }
+static unsigned char check_detour(void *self,int tips) {
+    if(self&&InterlockedCompareExchange(&enabled,0,0)&&controls_ready()){
+        void *exception=NULL,*model=invoke(music_model_instance,NULL,NULL,&exception);
+        if(model&&!exception){
+            uint32_t root=scene_pin(model,1);
+            if(root){
+                void *boxed=invoke(music_enabled,model,NULL,&exception);
+                void *value=boxed&&!exception?unbox_result(boxed):NULL;
+                int allowed=value&&*(unsigned char *)value;scene_unpin(root);
+                if(allowed)return 1;
+            }
+        }
+    }
+    return original_check(self,tips);
+}
+static void tick_detour(void *self,float delta) {
+    original_tick(self,delta);
+    ULONGLONG now=GetTickCount64();if(now<next_scene_check)return;next_scene_check=now+250;
+    void *exception=NULL,*model=invoke(scene_instance,NULL,NULL,&exception);
+    int active=0;
+    if(model&&!exception){
+        uint32_t root=scene_pin(model,1);
+        if(root){
+            void *checks[]={scene_ready,scene_loading,scene_data};unsigned char values[3]={0};int valid=1;
+            for(int i=0;i<3;++i){
+                void *boxed=invoke(checks[i],model,NULL,&exception);
+                void *value=boxed&&!exception?unbox_result(boxed):NULL;
+                if(!value){valid=0;break;}values[i]=*(unsigned char *)value;
+            }
+            active=valid&&values[0]&&!values[1]&&values[2];scene_unpin(root);
+        }
+    }
+    if(!active){native_restore=0;InterlockedExchange(&riding,0);}
+    controls_scene(active);
+}
 
 static void trace(const char *s) { if (logger) logger(s); }
 
@@ -130,6 +174,42 @@ int radio_prepare(HMODULE runtime, void *domain, void *image, const char *guid, 
         if(!info||jit_method(info)!=others[i]||jit_start(info)!=body||jit_size(info)<14)return 15;
         extra_targets[i]=body;
     }
+    void *scene_class=find_class(image,"","GameModeController"),*model_class=find_class(image,"","GameModeModel");
+    void *tick=scene_class?find_method(scene_class,"OnTick",1):NULL;
+    if(!tick||!model_class)return 16;
+    void *tick_sig=method_signature(tick),*tick_iter=NULL;
+    if(!tick_sig||(method_flags(tick,NULL)&0x10)||param_count(tick_sig)!=1||type_kind(return_type(tick_sig))!=1)return 16;
+    void *delta_type=param_type(tick_sig,&tick_iter);if(!delta_type||type_kind(delta_type)!=12)return 16;
+    scene_instance=find_method(model_class,"get_Instance",0);scene_ready=find_method(model_class,"get_WorldDoneAndLoadingClosed",0);
+    scene_loading=find_method(model_class,"get_Loading",0);scene_data=find_method(model_class,"get_HasGameModeData",0);
+    scene_pin=(uint32_t (*)(void *,int))GetProcAddress(runtime,"mono_gchandle_new");scene_unpin=(void (*)(uint32_t))GetProcAddress(runtime,"mono_gchandle_free");
+    unbox_result=(Ptr1)GetProcAddress(runtime,"mono_object_unbox");
+    if(!scene_instance||!scene_ready||!scene_loading||!scene_data||!scene_pin||!scene_unpin||!unbox_result)return 16;
+    void *is=method_signature(scene_instance);
+    if(!is||!(method_flags(scene_instance,NULL)&0x10)||param_count(is)||type_kind(return_type(is))!=18||class_from_type(return_type(is))!=model_class)return 16;
+    void *checks[]={scene_ready,scene_loading,scene_data};
+    for(int i=0;i<3;++i){void *s=method_signature(checks[i]);if(!s||(method_flags(checks[i],NULL)&0x10)||param_count(s)||type_kind(return_type(s))!=2)return 16;}
+    void *tick_code=compile(tick),*tick_info=tick_code?find_jit(domain,tick_code):NULL;
+    if(!tick_info||jit_method(tick_info)!=tick||jit_start(tick_info)!=tick_code||jit_size(tick_info)<14)return 17;
+    const unsigned char *tick_bytes=tick_code;
+    if(tick_bytes[0]==0xe9||(tick_bytes[0]==0xff&&tick_bytes[1]==0x25))return 17;
+    for(int i=0;i<3;++i)if(tick_code==extra_targets[i])return 17;
+    extra_targets[3]=tick_code;
+    /* Remove only the riding predicate; the game's current enable/unlock state stays authoritative. */
+    void *music_model=find_class(image,"","MotorcycleMusicPlayerModel");
+    music_model_instance=music_model?find_method(music_model,"get_Instance",0):NULL;
+    music_enabled=music_model?find_method(music_model,"get_IsEnable",0):NULL;check_method=find_method(klass,"CheckIsEnable",1);
+    if(!music_model_instance||!music_enabled||!check_method)return 18;
+    void *mi=method_signature(music_model_instance),*me=method_signature(music_enabled),*ck=method_signature(check_method),*ck_iter=NULL;
+    if(!mi||!me||!ck||!(method_flags(music_model_instance,NULL)&0x10)||(method_flags(music_enabled,NULL)&0x10)||(method_flags(check_method,NULL)&0x10)||
+       param_count(mi)||type_kind(return_type(mi))!=18||class_from_type(return_type(mi))!=music_model||param_count(me)||type_kind(return_type(me))!=2||param_count(ck)!=1||type_kind(return_type(ck))!=2)return 18;
+    void *tips_type=param_type(ck,&ck_iter);if(!tips_type||type_kind(tips_type)!=2)return 18;
+    void *check_code=compile(check_method),*check_info=check_code?find_jit(domain,check_code):NULL;
+    if(!check_info||jit_method(check_info)!=check_method||jit_start(check_info)!=check_code||jit_size(check_info)<14)return 19;
+    const unsigned char *check_bytes=check_code;
+    if(check_bytes[0]==0xe9||(check_bytes[0]==0xff&&check_bytes[1]==0x25))return 19;
+    for(int i=0;i<4;++i)if(check_code==extra_targets[i])return 19;
+    extra_targets[4]=check_code;
     void *code = compile(method);
     if (!code) return 10;
     void *ji = find_jit(domain, code);
@@ -156,6 +236,8 @@ int radio_prepare(HMODULE runtime, void *domain, void *image, const char *guid, 
     int ui_result=native_ui_prepare(runtime,domain,image);
     if(ui_result){char line[96];sprintf_s(line,sizeof(line),"Radio view visibility unavailable: stage=%d",ui_result);trace(line);}
     trace("Exact assembly, method signature, field types and JIT body verified");
+    trace("Automatic scene attachment ready: audited game-mode tick and scene readiness; no vehicle event required");
+    trace("Portable official view/navigation enabled on foot; native enable/unlock predicate retained");
     return 0;
 }
 
@@ -166,9 +248,9 @@ int radio_enable(void) {
     result = MH_CreateHook(target, (void *)leave_detour, (void **)&original_leave);
     if (result != MH_OK) { MH_Uninitialize(); return 200 + result; }
     hook_created = 1;
-    void *detours[3]={(void *)enter_detour,(void *)login_detour,(void *)clear_detour};
-    void **originals[3]={(void **)&original_enter,(void **)&original_login,(void **)&original_clear};
-    for(int i=0;i<3;++i) {
+    void *detours[5]={(void *)enter_detour,(void *)login_detour,(void *)clear_detour,(void *)tick_detour,(void *)check_detour};
+    void **originals[5]={(void **)&original_enter,(void **)&original_login,(void **)&original_clear,(void **)&original_tick,(void **)&original_check};
+    for(int i=0;i<5;++i) {
         result=MH_CreateHook(extra_targets[i],detours[i],originals[i]);
         if(result!=MH_OK){radio_remove();return 250+result;}
     }
@@ -189,7 +271,7 @@ int radio_remove(void) {
         hook_enabled = 0;
     }
     if (hook_created) {
-        for(int i=0;i<3;++i)if(extra_targets[i])MH_RemoveHook(extra_targets[i]);
+        for(int i=0;i<5;++i)if(extra_targets[i])MH_RemoveHook(extra_targets[i]);
         MH_STATUS result = MH_RemoveHook(target);
         if (result != MH_OK) return 500 + result;
         hook_created = 0;

@@ -5,10 +5,12 @@ extern "C" {
 #endif
 void controls_start(HMODULE module, const wchar_t *config, RadioLog log);
 void controls_capture(void);
+void controls_scene(int ready);
 void controls_session_end(void);
 void controls_shutdown(void);
 int controls_post(int command);
 DWORD controls_game_thread(void);
+int controls_ready(void);
 #ifdef __cplusplus
 }
 #endif

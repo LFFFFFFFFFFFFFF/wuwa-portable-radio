@@ -152,7 +152,7 @@ static DWORD WINAPI install_worker(void *unused) {
 __declspec(dllexport) void InitializeASI(void) {
     if(InterlockedCompareExchange(&once,1,0))return;
     if(!init_paths())return;
-    log_line("Portable radio v2.6 initialized; BGM suppression and audited 3.7.18 compatibility");
+    log_line("Portable radio v2.7 initialized; automatic scene attachment, no vehicle event required");
     /* Keep code alive until process exit while a managed method can call its detour. */
     wchar_t module_path[32768];HMODULE pinned;
     DWORD n=GetModuleFileNameW(self_module,module_path,32768);
@@ -166,6 +166,8 @@ __declspec(dllexport) void InitializeASI(void) {
 __declspec(dllexport) LONG PortableRadioStatus(void) { return InterlockedCompareExchange(&status,0,0); }
 #ifdef RADIO_LAB
 __declspec(dllexport) int PortableRadioLabRemove(void) { controls_shutdown();return radio_remove(); }
+__declspec(dllexport) DWORD PortableRadioLabThread(void) { return controls_game_thread(); }
+__declspec(dllexport) int PortableRadioLabPost(int command) { return controls_post(command); }
 #endif
 BOOL WINAPI DllMain(HINSTANCE module,DWORD reason,LPVOID reserved) {
     (void)reserved;if(reason==DLL_PROCESS_ATTACH)self_module=module;return TRUE;

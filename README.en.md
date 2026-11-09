@@ -24,9 +24,13 @@ Native titles use the current game track ID/configuration/localization. NetEase 
 
 ## Background music suppression
 
+v2.7 attaches automatically once the scene is ready; no motorbike enter/leave event is required. It observes the audited `GameModeController.OnTick(float)`, preserving its original execution and checking scene data, loading and loading-screen closure at most every 250 ms. Login/loading keeps controls inactive; leaving the scene stops external playback and releases BGM ownership, and re-entry enables controls again. Delayed plugin initialization still applies.
+
+In a ready scene, official radio navigation and the view no longer require riding. The game's current radio enable/unlock state remains authoritative, no riding fields are changed, and inactive scenes retain the original check.
+
 The source/right-click menu has a checked-by-default **Suppress game background music during playback** option, persisted as `[Audio] SuppressBackgroundMusic=0/1`. It follows actual NetEase SMTC Playing state or the local player's actual state, rather than a URI launch acknowledgement.
 
-External playback borrows the game's existing `system_motor_radio=playing` routing. Pause, stop, lost media sessions, disabling the option and session cleanup release the override, preserving an actively playing native radio's routing. The native source keeps its own official behavior. Master, speech, effects and radio volume settings are not changed. Routing calls run on the observed game thread and add no game detours. Actual acoustic behavior still needs a live game test.
+External playback borrows the game's existing `system_motor_radio=playing` routing. Pause, stop, lost media sessions, disabling the option and session cleanup release the override, preserving an actively playing native radio's routing. The native source keeps its own official behavior. Master, speech, effects and radio volume settings are not changed. Routing calls run on the observed game thread. Actual acoustic behavior still needs a live game test.
 
 v2.6 audits the 3.7.18 game assembly and additionally requires `Aki.Core` MVID `f2c9e329-0f5e-4676-9aa1-d7c93bbdb1d1` for this optional interface. Mismatch leaves routing unchanged.
 

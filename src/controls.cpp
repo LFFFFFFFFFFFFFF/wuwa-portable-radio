@@ -20,6 +20,7 @@
 static RadioLog logger;
 static HANDLE worker;
 static volatile LONG stop_worker, game_thread, session_active, session_end, ack;
+static volatile LONG session_epoch;
 static volatile LONG info_inflight, info_force;
 static volatile LONG bgm_inflight;
 static HHOOK message_hook;
@@ -32,6 +33,7 @@ static std::wstring notice;
 static ULONGLONG notice_until,requested_at;
 static CloudTrack requested_track;
 static bool cloud_request_pending;
+static WPARAM command_tag(){return ((WPARAM)(DWORD)session_epoch<<32)|0x50524144;}
 static void inform(const wchar_t *text) {notice=text;notice_until=GetTickCount64()+6000;}
 static void trace(const char *s) { if(logger)logger(s); }
 static int read_key(const wchar_t *name,const wchar_t *fallback,int default_key) {
@@ -62,7 +64,8 @@ static bool request_track(size_t index) {
 static LRESULT CALLBACK messages(int code,WPARAM removed,LPARAM data) {
     if(code==HC_ACTION&&removed==PM_REMOVE) {
         MSG *m=(MSG *)data;
-        if(m->message==control_message&&m->wParam==0x50524144) {
+        if(m->message==control_message&&(DWORD)m->wParam==0x50524144) {
+            if((DWORD)(m->wParam>>32)!=(DWORD)session_epoch){m->message=WM_NULL;return CallNextHookEx(message_hook,code,removed,data);}
             int result=0;
             if(m->lParam==4||m->lParam==5){
                 bool force=InterlockedExchange(&info_force,0)!=0||m->lParam==5;
@@ -91,29 +94,35 @@ extern "C" void controls_capture(void) {
         if(!message_hook) { trace("Game-thread message hook unavailable");return; }
         char line[96];sprintf_s(line,"Controls attached to observed game thread=%lu",current);trace(line);
     }
-    InterlockedExchange(&session_active,1);
+    if(!session_active){InterlockedIncrement(&session_epoch);InterlockedExchange(&session_active,1);}
+}
+extern "C" void controls_scene(int ready) {
+    if(ready){controls_capture();return;}
+    if(session_active&&GetCurrentThreadId()==controls_game_thread())controls_session_end();
 }
 extern "C" int controls_post(int command) {
     if(command==10){
         if(!game_thread||!message_hook||!session_active||InterlockedCompareExchange(&bgm_inflight,1,0))return 0;
-        if(PostThreadMessageW((DWORD)game_thread,control_message,0x50524144,command))return 1;
+        if(PostThreadMessageW((DWORD)game_thread,control_message,command_tag(),command))return 1;
         InterlockedExchange(&bgm_inflight,0);return 0;
     }
     if(command==4||command==5){
         if(command==5)InterlockedExchange(&info_force,1);
         if(!game_thread||!message_hook||!session_active||InterlockedCompareExchange(&info_inflight,1,0))return 0;
-        if(PostThreadMessageW((DWORD)game_thread,control_message,0x50524144,command))return 1;
+        if(PostThreadMessageW((DWORD)game_thread,control_message,command_tag(),command))return 1;
         InterlockedExchange(&info_inflight,0);return 0;
     }
     InterlockedExchange(&ack,0);
-    if(!game_thread||!message_hook||!session_active) { trace("Controls need a motorbike enter/leave event first");return 0; }
-    return PostThreadMessageW((DWORD)game_thread,control_message,0x50524144,command)!=0;
+    if(!game_thread||!message_hook||!session_active) { trace("Controls waiting for a ready game scene");return 0; }
+    return PostThreadMessageW((DWORD)game_thread,control_message,command_tag(),command)!=0;
 }
 extern "C" DWORD controls_game_thread(void) { return (DWORD)game_thread; }
+extern "C" int controls_ready(void) { return session_active&&GetCurrentThreadId()==controls_game_thread(); }
 extern "C" void controls_session_end(void) {
     bgm_request(0,0);bgm_release(0);
     InterlockedExchange(&session_active,0);InterlockedExchange(&session_end,1);
     InterlockedExchange(&info_force,0);
+    InterlockedExchange(&info_inflight,0);InterlockedExchange(&bgm_inflight,0);InterlockedExchange(&ack,0);
     native_info_reset();
     native_ui_reset();
 }
@@ -226,7 +235,7 @@ static DWORD WINAPI run(void *) {
     UINT ui_message=RegisterWindowMessageW(L"PortableRadio.UI.Commands.v2.4");
     MSG ui;PeekMessageW(&ui,NULL,0,0,PM_NOREMOVE);
     cloud_watch_start();
-    trace("Portable radio v2.4 ready: minus previous, equals next, OEM_3 official view; legacy F keys disabled");
+    trace("Portable radio v2.7 ready: minus previous, equals next, OEM_3 official view; legacy F keys disabled");
     while(!stop_worker) {
         bool reveal=false;
         if(InterlockedExchange(&session_end,0)) {if(audio_ready)p.stop();if(cloud_mode)cloud_command(2);cloud_mode=false;cloud_request_pending=false;pending_switch=0;InterlockedExchange(&ack,0);}
@@ -238,7 +247,7 @@ static DWORD WINAPI run(void *) {
             }else inform(L"切换失败：游戏内置电台未响应");
             pending_switch=0;
         }
-        if(pending_switch&&GetTickCount64()-pending_since>2500){pending_switch=0;controls_post(3);inform(L"切换超时，请先上、下摩托一次");trace("Game-thread control timed out; imported playback was not started");}
+        if(pending_switch&&GetTickCount64()-pending_since>2500){pending_switch=0;controls_post(3);inform(L"切换超时，请等待场景就绪后重试");trace("Game-thread control timed out; imported playback was not started");}
         DWORD foreground_pid=0;HWND foreground=GetForegroundWindow();if(foreground)GetWindowThreadProcessId(foreground,&foreground_pid);
         if(cloud_mode&&GetTickCount64()>=library_check){
             library_check=GetTickCount64()+1000;WIN32_FILE_ATTRIBUTE_DATA attributes;
@@ -269,7 +278,7 @@ static DWORD WINAPI run(void *) {
             if(i==0) {
                 if(cloud_mode){bool ok=cloud_command(1)!=0;trace(ok?"NetEase pause/resume accepted":"NetEase media session unavailable; enable SMTC");if(!ok)inform(L"无法控制网易云，请在客户端开启 SMTC");}
                 else if(p.local) {p.paused=!p.paused;if(!p.pending){if(p.paused)p.media->Pause();else p.media->Play();}trace(p.paused?"Local paused":"Local resumed");}
-                else {if(controls_post(1))inform(L"已请求暂停／继续内置电台");else inform(L"请先上、下摩托一次，接入内置电台");}
+                else {if(controls_post(1))inform(L"已请求暂停／继续内置电台");else inform(L"场景尚未就绪，请稍候再试");}
             } else if(i==1) {
                 if(ui_action==6&&cloud_mode){load_cloud_list();request_track(0);continue;}
                 if(ui_action==7&&!cloud_mode&&!p.local)continue;
@@ -277,14 +286,14 @@ static DWORD WINAPI run(void *) {
                 if(ui_action==6)prefer_cloud=true;else if(ui_action==8)prefer_cloud=false;
                 if(cloud_mode){cloud_command(2);cloud_mode=false;cloud_request_pending=false;controls_post(3);}
                 else if(p.local){p.stop();controls_post(3);}
-                else if(prefer_cloud){if(!load_cloud_list())inform(L"尚未导入歌曲，请打开链接导入窗口");else if(controls_post(2)){pending_switch=2;pending_since=GetTickCount64();}else inform(L"请先上、下摩托一次，接入电台控制");}
-                else if(audio_ready){p.scan();if(p.files.empty())inform(L"本地音乐文件夹中没有 MP3/WAV");else if(controls_post(2)){pending_switch=1;pending_since=GetTickCount64();}else inform(L"请先上、下摩托一次，接入电台控制");}
+                else if(prefer_cloud){if(!load_cloud_list())inform(L"尚未导入歌曲，请打开链接导入窗口");else if(controls_post(2)){pending_switch=2;pending_since=GetTickCount64();}else inform(L"场景尚未就绪，请稍候再试");}
+                else if(audio_ready){p.scan();if(p.files.empty())inform(L"本地音乐文件夹中没有 MP3/WAV");else if(controls_post(2)){pending_switch=1;pending_since=GetTickCount64();}else inform(L"场景尚未就绪，请稍候再试");}
             } else if(i==2||i==5){
                 if(cloud_mode&&!cloud_tracks.empty()){request_track((cloud_index+cloud_tracks.size()+(i==2?1:cloud_tracks.size()-1))%cloud_tracks.size());trace("Imported NetEase track requested");}
                 else if(audio_ready&&p.local)p.next(i==2?1:-1);
-                else if(!controls_post(i==2?7:6))inform(L"请先上、下摩托一次，接入官方电台");
+                else if(!controls_post(i==2?7:6))inform(L"场景尚未就绪，请稍候再试");
             } else if(i==3){std::wstring args=L"--library \""+std::wstring(cloud_list_path)+L"\"";if((INT_PTR)ShellExecuteW(NULL,L"open",import_path,args.c_str(),NULL,SW_SHOWNORMAL)<=32)inform(L"导入窗口启动失败，请检查导入器文件");else trace("NetEase import window opened");}
-            else if(i==4){if(cloud_mode){cloud_command(2);cloud_mode=false;cloud_request_pending=false;controls_post(3);}if(p.local){p.stop();controls_post(3);}if(!controls_post(8))inform(L"请先上、下摩托一次，再打开官方电台");}
+            else if(i==4){if(cloud_mode){cloud_command(2);cloud_mode=false;cloud_request_pending=false;controls_post(3);}if(p.local){p.stop();controls_post(3);}if(!controls_post(8))inform(L"场景尚未就绪，请稍候再打开电台");}
         }
         if(audio_ready)p.poll();
         if(!pending_switch&&foreground_pid==GetCurrentProcessId()&&GetTickCount64()>=next_info){controls_post(4);next_info=GetTickCount64()+700;}
@@ -311,7 +320,7 @@ static DWORD WINAPI run(void *) {
             display.source=L"游戏内置电台";
             display.title=native.title[0]?native.title:native.active?L"曲目 #"+std::to_wstring(native.track_id):L"摩托电台";
             display.state=!native.observed?L"等待读取":!native.active?L"未播放":native.playing?L"播放中":L"已暂停";
-            display.detail=!native.supported?L"曲名接口不匹配，请查看诊断日志":!native.observed?L"先上、下摩托一次，读取当前曲名":
+            display.detail=!native.supported?L"曲名接口不匹配，请查看诊断日志":!native.observed?L"等待场景就绪并读取当前曲名":
                 native.active&&!native.title[0]?L"当前曲名未解析，可按查看键重试":L"内置曲目 · 支持下车继续播放";
         }
         if(pending_switch){display.state=L"切换音源中";display.detail=L"正在等待游戏线程确认";}
