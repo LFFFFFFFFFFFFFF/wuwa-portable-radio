@@ -235,7 +235,7 @@ static DWORD WINAPI run(void *) {
     UINT ui_message=RegisterWindowMessageW(L"PortableRadio.UI.Commands.v2.4");
     MSG ui;PeekMessageW(&ui,NULL,0,0,PM_NOREMOVE);
     cloud_watch_start();
-    trace("Portable radio v2.7 ready: minus previous, equals next, OEM_3 official view; legacy F keys disabled");
+    trace("Portable radio v2.8 ready: minus previous, equals next, OEM_3 official view; legacy F keys disabled");
     while(!stop_worker) {
         bool reveal=false;
         if(InterlockedExchange(&session_end,0)) {if(audio_ready)p.stop();if(cloud_mode)cloud_command(2);cloud_mode=false;cloud_request_pending=false;pending_switch=0;InterlockedExchange(&ack,0);}
@@ -315,11 +315,19 @@ static DWORD WINAPI run(void *) {
             display.source=L"本地音乐";auto slash=p.current.find_last_of(L'\\');display.title=p.current.substr(slash==std::wstring::npos?0:slash+1);
             display.state=p.pending?L"载入中":p.paused?L"已暂停":L"播放中";
             display.detail=std::to_wstring(p.index+1)+L" / "+std::to_wstring(p.files.size());
+            display.local_path=p.current;display.playing=actual_local;
+            PROPVARIANT position={},duration={};
+            if(!p.pending&&SUCCEEDED(p.media->GetPosition(MFP_POSITIONTYPE_100NS,&position))&&SUCCEEDED(p.media->GetDuration(MFP_POSITIONTYPE_100NS,&duration))&&position.vt==VT_I8&&duration.vt==VT_UI8&&duration.uhVal.QuadPart<=864000000000ULL){
+                display.position_ms=position.hVal.QuadPart/10000;display.duration_ms=(int64_t)(duration.uhVal.QuadPart/10000);
+                display.timeline=display.position_ms>=0&&display.duration_ms>0;
+            }
+            PropVariantClear(&position);PropVariantClear(&duration);
         }else {
             NativeRadioInfo native=native_info_snapshot();
             display.source=L"游戏内置电台";
             display.title=native.title[0]?native.title:native.active?L"曲目 #"+std::to_wstring(native.track_id):L"摩托电台";
             display.state=!native.observed?L"等待读取":!native.active?L"未播放":native.playing?L"播放中":L"已暂停";
+            display.music_id=native.active?(uint64_t)native.track_id:0;display.playing=native.playing!=0;
             display.detail=!native.supported?L"曲名接口不匹配，请查看诊断日志":!native.observed?L"等待场景就绪并读取当前曲名":
                 native.active&&!native.title[0]?L"当前曲名未解析，可按查看键重试":L"内置曲目 · 支持下车继续播放";
         }

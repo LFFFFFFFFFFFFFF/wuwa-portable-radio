@@ -32,6 +32,9 @@ inline CloudDisplay describe_cloud(const CloudStatus &actual,const std::vector<C
     card.source=L"网易云";
     card.title=actual.available&&!actual.title.empty()?actual.title:L"等待网易云曲目信息";
     card.artist=actual.artist;
+    card.position_ms=actual.position_ms;card.duration_ms=actual.duration_ms;card.timeline=actual.available&&actual.timeline;
+    card.playing=actual.available&&actual.playback==4;card.rate_permille=actual.rate_permille;
+    for(auto const &track:tracks)if(same_track(normalized,track)){card.music_id=track.id;break;}
     card.state=!actual.available?L"未连接 SMTC":actual.playback==4?L"播放中":actual.playback==5?L"已暂停":L"未播放";
     if(result.pending){
         card.state=timed_out?L"切歌未确认":L"切歌待确认";

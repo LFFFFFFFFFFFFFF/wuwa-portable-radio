@@ -12,6 +12,8 @@ using System.Windows.Forms;
 internal sealed class RadioCard {
     internal string Source="随身电台",Title="等待曲目信息",Artist="",State="",Detail="";
     internal int Pid,ControlThread; internal long Sequence; internal bool ViewOpen,Riding,BgmEnabled,BgmAvailable,BgmActive;
+    internal long MusicId,PositionMs,DurationMs,SampleTick;internal string LocalPath="";
+    internal bool Timeline,Playing;internal int RatePermille=1000;
     internal static Dictionary<string,string> Read(string path) {
         var result=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
         using(var file=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete))
@@ -33,13 +35,15 @@ internal sealed class RadioCard {
     internal static int Number(Dictionary<string,string> values,string key,int fallback,int min,int max) {
         int value;return int.TryParse(Get(values,key,""),out value)?Math.Max(min,Math.Min(max,value)):fallback;
     }
+    internal static long Long(Dictionary<string,string> values,string key){long value;return long.TryParse(Get(values,key,""),out value)?Math.Max(0,value):0;}
     internal static RadioCard Load(string path,int pid) {
         var values=Read(path);int owner;long revision;
         if(!int.TryParse(Get(values,"Radio.Pid",""),out owner)||owner!=pid||
            !long.TryParse(Get(values,"Radio.Sequence",""),out revision))throw new InvalidDataException("Status owner/revision mismatch");
         return new RadioCard{Pid=owner,Sequence=revision,ControlThread=Number(values,"Radio.ControlThread",0,0,int.MaxValue),ViewOpen=Get(values,"Radio.ViewOpen","0")=="1",Riding=Get(values,"Radio.Riding","0")=="1",Source=Get(values,"Radio.Source","随身电台"),
             Title=Get(values,"Radio.Title","等待曲目信息"),Artist=Get(values,"Radio.Artist",""),
-            State=Get(values,"Radio.State",""),Detail=Get(values,"Radio.Detail",""),BgmEnabled=Get(values,"Radio.BgmEnabled","1")=="1",BgmAvailable=Get(values,"Radio.BgmAvailable","0")=="1",BgmActive=Get(values,"Radio.BgmActive","0")=="1"};
+            State=Get(values,"Radio.State",""),Detail=Get(values,"Radio.Detail",""),BgmEnabled=Get(values,"Radio.BgmEnabled","1")=="1",BgmAvailable=Get(values,"Radio.BgmAvailable","0")=="1",BgmActive=Get(values,"Radio.BgmActive","0")=="1",
+            MusicId=Long(values,"Radio.MusicId"),LocalPath=Get(values,"Radio.LocalPath",""),PositionMs=Long(values,"Radio.PositionMs"),DurationMs=Long(values,"Radio.DurationMs"),SampleTick=Long(values,"Radio.SampleTick"),Timeline=Get(values,"Radio.Timeline","0")=="1",Playing=Get(values,"Radio.Playing","0")=="1",RatePermille=Number(values,"Radio.RatePermille",1000,250,4000)};
     }
 }
 
@@ -110,16 +114,21 @@ internal sealed class HudContext:ApplicationContext {
     [DllImport("user32.dll")]private static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int cx,int cy,uint flags);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)]private static extern uint RegisterWindowMessage(string name);
     [DllImport("user32.dll")]private static extern bool PostThreadMessage(uint thread,uint message,IntPtr w,IntPtr l);
+    [DllImport("kernel32.dll")]private static extern ulong GetTickCount64();
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]private static extern bool WritePrivateProfileString(string section,string key,string value,string file);
     private readonly HudWindow mini=new HudWindow(false),addon=new HudWindow(true);
     private readonly Timer timer=new Timer();private readonly Process parent;
     private readonly ContextMenuStrip menu=new ContextMenuStrip();private ImportWindow importer;
+    private readonly LyricsWindow subtitles=new LyricsWindow();private readonly LyricsController lyrics;
+    private readonly string configPath;private bool lyricsEnabled,translationEnabled;private int lyricsOffset;
     private readonly string path,library;private readonly int pid,seconds;private readonly bool always;
     private readonly uint commandMessage=RegisterWindowMessage("PortableRadio.UI.Commands.v2.4");
     private DateTime until=DateTime.MinValue,started=DateTime.UtcNow;private long revision=-1;private int missing;
     internal HudContext(int gamePid,string status,string config){
-        pid=gamePid;path=status;library=Path.Combine(Path.GetDirectoryName(config),"PortableRadioNetEase.ini");parent=Process.GetProcessById(pid);var retained=parent.Handle;
+        pid=gamePid;path=status;configPath=config;lyrics=new LyricsController(config);library=Path.Combine(Path.GetDirectoryName(config),"PortableRadioNetEase.ini");parent=Process.GetProcessById(pid);var retained=parent.Handle;
         var settings=File.Exists(config)?RadioCard.Read(config):new Dictionary<string,string>();
         seconds=RadioCard.Number(settings,"HUD.ShowSeconds",6,2,60);always=RadioCard.Number(settings,"HUD.AlwaysVisible",1,0,1)!=0;
+        lyricsEnabled=RadioCard.Number(settings,"Lyrics.Enabled",1,0,1)!=0;translationEnabled=RadioCard.Number(settings,"Lyrics.Translation",1,0,1)!=0;lyricsOffset=RadioCard.Number(settings,"Lyrics.OffsetMs",0,-10000,10000);
         mini.Command=Send;mini.ShowSourceMenu=ShowMenu;addon.ShowSourceMenu=ShowMenu;addon.AddSongs=OpenImporter;
         menu.Font=new Font("Microsoft YaHei UI",10);menu.ForeColor=RadioTheme.Text;menu.Renderer=new ToolStripProfessionalRenderer(new RadioMenuColors());
         menu.Items.Add("游戏内置电台",null,delegate{Send(7);});menu.Items.Add("网易云音乐",null,delegate{Send(6);});menu.Items.Add("本地音乐",null,delegate{Send(8);});menu.Items.Add(new ToolStripSeparator());
@@ -128,16 +137,28 @@ internal sealed class HudContext:ApplicationContext {
         bgm.ToolTipText="控制网易云与本地音乐的背景避让；内置电台沿用官方规则。暂停或停止外部播放后自动恢复。";
         bgm.Click+=delegate{Send(9);};menu.Items.Add(bgm);
         menu.Opening+=delegate{bgm.Checked=mini.Card.BgmEnabled;bgm.Enabled=mini.Card.BgmAvailable;bgm.Text=mini.Card.BgmAvailable?"播放时屏蔽游戏背景音乐":"背景音乐屏蔽（接口未就绪）";};
+        menu.Items.Add(new ToolStripSeparator());var captions=new ToolStripMenuItem("歌曲字幕");menu.Items.Add(captions);
+        captions.Click+=delegate{lyricsEnabled=!lyricsEnabled;SaveLyrics("Enabled",lyricsEnabled?"1":"0");if(!lyricsEnabled){subtitles.Hide();lyrics.Select(new RadioCard());}};
+        var options=new ToolStripMenuItem("字幕设置");menu.Items.Add(options);var translation=new ToolStripMenuItem("显示翻译");options.DropDownItems.Add(translation);
+        translation.Click+=delegate{translationEnabled=!translationEnabled;SaveLyrics("Translation",translationEnabled?"1":"0");};
+        var timing=new ToolStripMenuItem();timing.Enabled=false;options.DropDownItems.Add(timing);
+        options.DropDownItems.Add("字幕提前 0.25 秒",null,delegate{SetLyricsOffset(lyricsOffset+250);});options.DropDownItems.Add("字幕延后 0.25 秒",null,delegate{SetLyricsOffset(lyricsOffset-250);});options.DropDownItems.Add("重置时间偏移",null,delegate{SetLyricsOffset(0);});
+        options.DropDownItems.Add(new ToolStripSeparator());options.DropDownItems.Add("重新读取当前歌词",null,delegate{lyrics.Select(mini.Card,true);});
+        options.DropDownItems.Add("导入当前歌曲的 LRC…",null,delegate{try{using(var dialog=new OpenFileDialog{Title="导入当前歌曲字幕",Filter="LRC 歌词 (*.lrc)|*.lrc",CheckFileExists=true})if(dialog.ShowDialog()==DialogResult.OK)lyrics.Import(mini.Card,dialog.FileName);}catch(Exception ex){MessageBox.Show(ex.Message,"歌曲字幕");}});
+        var lyricStatus=new ToolStripMenuItem();lyricStatus.Enabled=false;options.DropDownItems.Add(lyricStatus);
+        menu.Opening+=delegate{captions.Checked=lyricsEnabled;translation.Checked=translationEnabled;timing.Text="时间偏移："+lyricsOffset+" ms（正值提前）";lyricStatus.Text=mini.Card.Source=="游戏内置电台"?"内置电台暂未接入歌词进度":lyrics.Notice.Length>0?lyrics.Notice:"歌词已就绪";};
         timer.Interval=150;timer.Tick+=Tick;timer.Start();
     }
     private void Send(int action){if(mini.Card.ControlThread>0)PostThreadMessage((uint)mini.Card.ControlThread,commandMessage,new IntPtr(Process.GetCurrentProcess().Id),new IntPtr(action));}
+    private void SaveLyrics(string key,string value){WritePrivateProfileString("Lyrics",key,value,configPath);}
+    private void SetLyricsOffset(int value){lyricsOffset=Math.Max(-10000,Math.Min(10000,value));SaveLyrics("OffsetMs",lyricsOffset.ToString(System.Globalization.CultureInfo.InvariantCulture));}
     private void ShowMenu(){menu.Show(Cursor.Position);}
     private void OpenImporter(){if(importer!=null&&!importer.IsDisposed){importer.Activate();return;}importer=new ImportWindow(library);importer.Show();}
-    private static void Place(HudWindow window,int x,int y){SetWindowPos(window.Handle,new IntPtr(-1),x,y,0,0,0x0001|0x0010);if(!window.Visible)window.Show();}
-    private void Hide(){if(mini.Visible)mini.Hide();if(addon.Visible)addon.Hide();}
+    private static void Place(Form window,int x,int y){SetWindowPos(window.Handle,new IntPtr(-1),x,y,0,0,0x0001|0x0010);if(!window.Visible)window.Show();}
+    private void Hide(){if(mini.Visible)mini.Hide();if(addon.Visible)addon.Hide();if(subtitles.Visible)subtitles.Hide();}
     private void Tick(object sender,EventArgs args){
         if(parent.HasExited){ExitThread();return;}
-        try{var card=RadioCard.Load(path,pid);missing=0;if(card.Sequence!=revision){revision=card.Sequence;mini.Card=addon.Card=card;mini.Invalidate();addon.Invalidate();until=DateTime.UtcNow.AddSeconds(seconds);}}
+        try{var card=RadioCard.Load(path,pid);missing=0;if(card.Sequence!=revision){bool changed=revision<0||card.Title!=mini.Card.Title||card.State!=mini.Card.State||card.Source!=mini.Card.Source||card.Detail!=mini.Card.Detail;revision=card.Sequence;mini.Card=addon.Card=card;mini.Invalidate();addon.Invalidate();if(changed)until=DateTime.UtcNow.AddSeconds(seconds);}}
         catch(IOException){missing++;}catch(UnauthorizedAccessException){missing++;}
         if(missing>15&&(revision>=0||DateTime.UtcNow-started>TimeSpan.FromSeconds(15))){ExitThread();return;}
         uint foregroundPid;IntPtr foreground=GetForegroundWindow();GetWindowThreadProcessId(foreground,out foregroundPid);
@@ -145,11 +166,18 @@ internal sealed class HudContext:ApplicationContext {
         if(revision<0||foregroundPid!=(uint)pid||IsIconic(foreground)){Hide();return;}
         Rect bounds;Point origin=new Point(0,0);if(!GetClientRect(foreground,out bounds)||!ClientToScreen(foreground,ref origin))return;
         int width=bounds.Right,height=bounds.Bottom;
+        if(lyricsEnabled&&(mini.Card.Source=="网易云"||mini.Card.Source=="本地音乐")){
+            lyrics.Select(mini.Card);long position=LyricClock.Position(mini.Card,(long)GetTickCount64(),lyricsOffset);
+            var line=lyrics.Document!=null&&position>=0?lyrics.Document.At(position):Tuple.Create(lyrics.Notice.Length>0?lyrics.Notice:"等待客户端播放进度","");
+            subtitles.Line=line.Item1;subtitles.Translation=translationEnabled?line.Item2:"";subtitles.Note="随身电台 · "+mini.Card.Source+(mini.Card.Playing?"":" · 已暂停／停止");subtitles.Invalidate();
+            if(subtitles.Line.Length==0&&subtitles.Translation.Length==0){if(subtitles.Visible)subtitles.Hide();}
+            else{subtitles.Width=Math.Max(320,Math.Min(960,width-32));Place(subtitles,origin.X+(width-subtitles.Width)/2,origin.Y+(int)(height*0.79));}
+        }else{if(subtitles.Visible)subtitles.Hide();lyrics.Select(new RadioCard());}
         if(mini.Card.ViewOpen){if(mini.Visible)mini.Hide();Place(addon,origin.X+(int)(width*0.155),origin.Y+(int)(height*0.045));}
         else{if(addon.Visible)addon.Hide();if((mini.Card.Riding&&mini.Card.Source=="游戏内置电台")||(!always&&DateTime.UtcNow>until)){if(mini.Visible)mini.Hide();return;}
             Place(mini,origin.X+(width-mini.Width)/2,origin.Y+(int)(height*0.04));}
     }
-    protected override void ExitThreadCore(){timer.Stop();timer.Dispose();if(importer!=null)importer.Dispose();menu.Dispose();mini.Dispose();addon.Dispose();parent.Dispose();base.ExitThreadCore();}
+    protected override void ExitThreadCore(){timer.Stop();timer.Dispose();lyrics.Dispose();subtitles.Dispose();if(importer!=null)importer.Dispose();menu.Dispose();mini.Dispose();addon.Dispose();parent.Dispose();base.ExitThreadCore();}
 }
 internal static class HudProgram {
     internal static void Render(string path){
@@ -163,15 +191,19 @@ internal static class HudProgram {
         }
     }
     internal static int SelfTest(){string file=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"hud-test-"+Guid.NewGuid().ToString("N")+".ini");try{
-        File.WriteAllText(file,"[Radio]\r\nPid=123\r\nSequence=42\r\nControlThread=456\r\nViewOpen=1\r\nRiding=0\r\nBgmEnabled=1\r\nBgmAvailable=1\r\nBgmActive=0\r\nSource=网易云\r\nTitle=たぶん = [Live] & 你好\r\nArtist=YOASOBI\r\nState=切歌待确认\r\n",Encoding.Unicode);
+        File.WriteAllText(file,"[Radio]\r\nPid=123\r\nSequence=42\r\nControlThread=456\r\nViewOpen=1\r\nRiding=0\r\nBgmEnabled=1\r\nBgmAvailable=1\r\nBgmActive=0\r\nSource=网易云\r\nTitle=たぶん = [Live] & 你好\r\nArtist=YOASOBI\r\nState=切歌待确认\r\nMusicId=1459343252\r\nPositionMs=1000\r\nDurationMs=10000\r\nSampleTick=5000\r\nTimeline=1\r\nPlaying=0\r\nRatePermille=2000\r\n",Encoding.Unicode);
         var card=RadioCard.Load(file,123);if(card.Title!="たぶん = [Live] & 你好"||!card.ViewOpen||card.Riding||card.ControlThread!=456)throw new Exception("HUD contract");
         if(!card.BgmEnabled||!card.BgmAvailable||card.BgmActive)throw new Exception("BGM state contract");
+        if(card.MusicId!=1459343252||card.PositionMs!=1000||card.DurationMs!=10000||card.SampleTick!=5000||!card.Timeline||card.Playing||card.RatePermille!=2000)throw new Exception("Subtitle timeline contract");
         bool rejected=false;try{RadioCard.Load(file,124);}catch(InvalidDataException){rejected=true;}if(!rejected)throw new Exception("Wrong PID");
         using(var bitmap=new Bitmap(580,76))using(var g=Graphics.FromImage(bitmap)){card.Title=new string('歌',400);HudWindow.PaintCard(g,new Rectangle(0,0,580,76),card,false);}
         Console.WriteLine("PASS: HUD Unicode/PID/visibility/worker contract and long-title rendering");return 0;
     }catch(Exception e){Console.Error.WriteLine(e);return 1;}finally{if(File.Exists(file))File.Delete(file);}}
     [STAThread]private static int Main(string[] args){
         if(args.Length==1&&args[0]=="--self-test")return SelfTest();
+        if(args.Length==1&&args[0]=="--lyrics-self-test")return LyricsTests.Run();
+        if(args.Length==2&&args[0]=="--lyrics-probe")return LyricsTests.Probe(args[1]);
+        if(args.Length==2&&args[0]=="--render-lyrics-preview"){LyricsTests.Render(Path.GetFullPath(args[1]));return 0;}
         if(args.Length==2&&args[0]=="--render-preview"){Render(Path.GetFullPath(args[1]));return 0;}
         int pid;if(args.Length!=6||args[0]!="--pid"||!int.TryParse(args[1],out pid)||pid<=0||args[2]!="--status"||args[4]!="--config")return 2;
         System.Net.ServicePointManager.SecurityProtocol=System.Net.SecurityProtocolType.Tls12;

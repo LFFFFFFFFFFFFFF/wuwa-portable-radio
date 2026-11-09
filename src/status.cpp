@@ -6,6 +6,7 @@
 static std::wstring path, previous;
 static HANDLE hud;
 static unsigned long sequence;
+static ULONGLONG next_publish;
 static std::wstring clean(std::wstring value) {
     if(value.size()>512)value.resize(512);
     for(auto &c:value)if(c<L' '||c==0x7f)c=L' ';
@@ -35,9 +36,13 @@ void status_start(HMODULE module,const wchar_t *config) {
 }
 void status_publish(const RadioStatus &s,bool reveal) {
     if(path.empty())return;
+    ULONGLONG now=GetTickCount64();if(!reveal&&now<next_publish)return;
     std::wstring body=L"Source="+clean(s.source)+L"\r\nTitle="+clean(s.title)+L"\r\nArtist="+clean(s.artist)+
         L"\r\nState="+clean(s.state)+L"\r\nDetail="+clean(s.detail)+L"\r\nViewOpen="+(s.view_open?L"1":L"0")+L"\r\nRiding="+(s.riding?L"1":L"0")+
-        L"\r\nBgmEnabled="+(s.bgm_enabled?L"1":L"0")+L"\r\nBgmAvailable="+(s.bgm_available?L"1":L"0")+L"\r\nBgmActive="+(s.bgm_active?L"1":L"0")+L"\r\n";
+        L"\r\nBgmEnabled="+(s.bgm_enabled?L"1":L"0")+L"\r\nBgmAvailable="+(s.bgm_available?L"1":L"0")+L"\r\nBgmActive="+(s.bgm_active?L"1":L"0")+
+        L"\r\nMusicId="+std::to_wstring(s.music_id)+L"\r\nLocalPath="+clean(s.local_path)+L"\r\nPositionMs="+std::to_wstring(s.position_ms)+
+        L"\r\nDurationMs="+std::to_wstring(s.duration_ms)+L"\r\nTimeline="+(s.timeline?L"1":L"0")+L"\r\nPlaying="+(s.playing?L"1":L"0")+
+        L"\r\nRatePermille="+std::to_wstring(s.rate_permille)+L"\r\nSampleTick="+std::to_wstring(s.timeline?now:0)+L"\r\n";
     if(body==previous&&!reveal)return;
     std::wstring text=L"[Radio]\r\nPid="+std::to_wstring(GetCurrentProcessId())+L"\r\nSequence="+
         std::to_wstring(sequence+1)+L"\r\nControlThread="+std::to_wstring(GetCurrentThreadId())+L"\r\n"+body;
@@ -47,12 +52,12 @@ void status_publish(const RadioStatus &s,bool reveal) {
     bool ok=fwrite(&bom,sizeof(bom),1,file)==1&&fwrite(text.data(),sizeof(wchar_t),text.size(),file)==text.size();
     if(fclose(file))ok=false;
     if(ok&&MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){
-        previous=body;++sequence;
+        previous=body;++sequence;next_publish=now+200;
     }else DeleteFileW(temp.c_str());
 }
 DWORD status_hud_pid(){return hud?GetProcessId(hud):0;}
 void status_stop() {
     if(!path.empty())DeleteFileW(path.c_str());
     if(hud){CloseHandle(hud);hud=nullptr;}
-    path.clear();previous.clear();
+    path.clear();previous.clear();next_publish=0;
 }

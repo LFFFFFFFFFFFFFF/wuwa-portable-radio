@@ -1,4 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <shellapi.h>
 #include <objbase.h>
@@ -41,7 +42,19 @@ static DWORD WINAPI watch(void *) {
                 if(request.wait_for(500ms)==winrt::Windows::Foundation::AsyncStatus::Completed) {
                     auto properties=request.get();
                     next.title=properties.Title().c_str();next.artist=properties.Artist().c_str();
-                    next.playback=(int)session.GetPlaybackInfo().PlaybackStatus();next.available=true;
+                    auto playback=session.GetPlaybackInfo();
+                    next.playback=(int)playback.PlaybackStatus();next.available=true;
+                    try{
+                        auto rate=playback.PlaybackRate();if(rate&&rate.Value()>=0.25&&rate.Value()<=4.0)next.rate_permille=(int)(rate.Value()*1000);
+                        auto timeline=session.GetTimelineProperties();
+                        next.position_ms=std::chrono::duration_cast<std::chrono::milliseconds>(timeline.Position()-timeline.StartTime()).count();
+                        next.duration_ms=std::chrono::duration_cast<std::chrono::milliseconds>(timeline.EndTime()-timeline.StartTime()).count();
+                        auto age=std::chrono::duration_cast<std::chrono::milliseconds>(winrt::clock::now()-timeline.LastUpdatedTime()).count();
+                        next.timeline=next.duration_ms>0&&next.duration_ms<=86400000&&next.position_ms>=0&&age>=-1000&&age<=86400000;
+                        if(next.timeline&&next.playback==4&&age>0)next.position_ms+=age*next.rate_permille/1000;
+                        next.position_ms=std::clamp(next.position_ms,(int64_t)0,std::max((int64_t)0,next.duration_ms));
+                        {std::lock_guard<std::mutex> lock(snapshot_mutex);if(next.title!=snapshot.title||next.artist!=snapshot.artist)next.timeline=false;}
+                    }catch(winrt::hresult_error const &){next.timeline=false;}
                 }else request.Cancel();
                 break;
             }
@@ -56,7 +69,13 @@ static DWORD WINAPI watch(void *) {
 }
 void cloud_watch_start(){InterlockedExchange(&stopping,0);watcher=CreateThread(NULL,0,watch,NULL,0,NULL);}
 void cloud_watch_stop(){InterlockedExchange(&stopping,1);if(watcher){WaitForSingleObject(watcher,3000);CloseHandle(watcher);watcher=nullptr;}}
-CloudStatus cloud_status(){std::lock_guard<std::mutex> lock(snapshot_mutex);return GetTickCount64()-snapshot_time<4000?snapshot:CloudStatus{};}
+CloudStatus cloud_status(){
+    std::lock_guard<std::mutex> lock(snapshot_mutex);ULONGLONG age=GetTickCount64()-snapshot_time;
+    if(age>=4000)return CloudStatus{};
+    CloudStatus result=snapshot;
+    if(result.timeline&&result.playback==4)result.position_ms=std::min(result.duration_ms,result.position_ms+(int64_t)age*result.rate_permille/1000);
+    return result;
+}
 int cloud_command(int command) {
     try {
         auto manager=winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();

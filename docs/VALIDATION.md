@@ -21,6 +21,14 @@
 
 The repository contains no extracted game code, game assembly, runtime binary, songs, account cookies or raw game logs.
 
+v2.8 adds network-free subtitle tests for the pinned HyPlayer LRC parser,
+fractional/multiple timestamps, signed global offsets, blank-line clearing,
+translations, forward/backward seeks, pause/rate/stale clocks, adjacent UTF-8/
+UTF-16 files, bounded data and superseded fetches. A read-only request for the
+user-supplied NetEase ID returned 65 timed original lines and 62 translation lines;
+only counts were recorded. The synthetic subtitle preview was rendered and
+visually checked. Real client-to-game subtitle timing remains to be tested.
+
 Native metadata calls follow the [Mono embedding API](https://www.mono-project.com/docs/advanced/embedding/). Temporary managed results use short-lived GC handles; no managed object/string pointers are passed to the HUD worker. The HUD receives a copied UTF-16 snapshot. Refresh messages have separate bookkeeping and do not consume playback command acknowledgements.
 
 ## Repeatable checks

@@ -35,10 +35,13 @@ try {
     Run $cc ($common+@('/LD',(Join-Path $src 'plugin.c'))+$bridge+@('/Fe:PortableRadioNative-loadlate.asi')+$libraries)
     $uiRefs=@('/r:System.Windows.Forms.dll','/r:System.Drawing.dll','/r:System.Net.Http.dll','/r:System.Web.Extensions.dll')
     Run $csc (@('/nologo','/target:winexe','/out:NetEaseImporter.exe')+$uiRefs+@((Join-Path $src 'Importer.cs'),(Join-Path $src 'RadioTheme.cs')))
-    Run $csc (@('/nologo','/target:winexe','/main:HudProgram','/out:RadioHud.exe')+$uiRefs+@((Join-Path $src 'RadioHud.cs'),(Join-Path $src 'Importer.cs'),(Join-Path $src 'RadioTheme.cs')))
+    $lyricSources=@(Get-ChildItem -LiteralPath (Join-Path $repo 'third_party\lyricparser') -Filter '*.cs' -File | ForEach-Object FullName)
+    Run $csc (@('/nologo','/target:winexe','/main:HudProgram','/out:RadioHud.exe')+$uiRefs+@((Join-Path $src 'RadioHud.cs'),(Join-Path $src 'Importer.cs'),(Join-Path $src 'RadioTheme.cs'),(Join-Path $src 'Lyrics.cs'),(Join-Path $tests 'LyricsTests.cs'))+$lyricSources)
     foreach ($program in @('NetEaseImporter.exe','RadioHud.exe')) {
+    $testArguments=if($program -eq 'RadioHud.exe'){@('--self-test','--lyrics-self-test')}else{@('--self-test')}
+    foreach($testArgument in $testArguments){
     $selfTest=[Diagnostics.Process]::new()
-    $selfTest.StartInfo=[Diagnostics.ProcessStartInfo]::new((Join-Path $out $program),'--self-test')
+    $selfTest.StartInfo=[Diagnostics.ProcessStartInfo]::new((Join-Path $out $program),$testArgument)
     $selfTest.StartInfo.UseShellExecute=$false
     $selfTest.StartInfo.CreateNoWindow=$true
     $selfTest.StartInfo.RedirectStandardOutput=$true
@@ -53,6 +56,7 @@ try {
     Write-Output $message
     $selfTest.Dispose()
     }
+    }
     if ($WithTests) {
         Run $cc ($common+@('/utf-8','/EHsc','/std:c++20',(Join-Path $tests 'track_info_lab.cpp'),'/Fe:track_info_lab.exe','/link','normaliz.lib'))
         Run (Join-Path $out 'track_info_lab.exe') @()
@@ -66,5 +70,6 @@ try {
         Run $cc ($testFlags+@('/DRADIO_LAB','/LD',(Join-Path $src 'plugin.c'))+$bridge+@('/Fe:PortableRadioTest.asi')+$libraries)
     }
     Copy-Item -LiteralPath (Join-Path $mh 'LICENSE.txt') -Destination (Join-Path $out 'MinHook-LICENSE.txt') -Force
+    Copy-Item -LiteralPath (Join-Path $repo 'third_party\lyricparser\LICENSE.txt') -Destination (Join-Path $out 'LyricParser-LICENSE.txt') -Force
     Write-Output ('Build and importer/HUD self-tests passed: '+$out)
 } finally { Pop-Location }

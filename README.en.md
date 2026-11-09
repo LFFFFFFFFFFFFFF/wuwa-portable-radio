@@ -34,6 +34,14 @@ External playback borrows the game's existing `system_motor_radio=playing` routi
 
 v2.6 audits the 3.7.18 game assembly and additionally requires `Aki.Core` MVID `f2c9e329-0f5e-4676-9aa1-d7c93bbdb1d1` for this optional interface. Mismatch leaves routing unchanged.
 
+## Song subtitles (v2.8)
+
+The source/right-click menu adds **Song subtitles** and settings. Enabled by default, the game-styled bottom-center overlay supports translated lines, ±10 seconds timing adjustment in 250 ms steps, and manual LRC import without new hotkeys.
+
+NetEase lyrics use the imported ID matched to actual client title/artist, and the client's real SMTC position/rate. Pause freezes, seeks update, and pending requests never select unconfirmed target lyrics. Local playback reads adjacent `.lrc` and optional `.zh.lrc` files (UTF-8 or BOM-marked UTF-16), using actual player progress. Missing lyrics or timelines show a status; native radio has no verified subtitle timeline in this release.
+
+A pinned MIT-licensed [HyPlayer/LyricParser](https://github.com/HyPlayer/LyricParser) source subset supplies LRC parsing. Downloads and parsing run in the separate HUD, with no new game detours. See [integration details](docs/LYRICS.md).
+
 ## Build
 
 Install PowerShell 7, Visual Studio Build Tools with Desktop development with C++, a Windows 10/11 SDK with C++/WinRT, and the .NET Framework 4.x compiler.

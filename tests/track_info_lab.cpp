@@ -10,12 +10,14 @@ int main(){
     CloudStatus actual{L"第一首",L"甲",4,true};
     auto display=describe_cloud(actual,tracks,1,tracks[1],true,false);
     CHECK(display.pending&&display.card.title==L"第一首"&&display.card.state==L"切歌待确认");
+    CHECK(display.card.music_id==1); // A pending request must not select the requested song's lyrics.
     CHECK(display.card.detail.find(L"たぶん")!=std::wstring::npos);
     display=describe_cloud(actual,tracks,1,tracks[1],true,true);
     CHECK(display.pending&&display.card.title==L"第一首"&&display.card.state==L"切歌未确认");
     actual={L"たぶん",L"YOASOBI",5,true};
     display=describe_cloud(actual,tracks,0,tracks[1],true,false);
     CHECK(!display.pending&&display.index==1&&display.card.state==L"已暂停");
+    CHECK(display.card.music_id==2&&!display.card.playing);
     actual.title=L"\u305f\u3075\u3099\u3093"; // NFD dakuten from public metadata.
     display=describe_cloud(actual,tracks,0,tracks[1],true,false);
     CHECK(!display.pending&&display.index==1);
@@ -29,5 +31,6 @@ int main(){
     CHECK(display.pending&&display.card.title!=tracks[1].title&&display.card.artist.empty());
     actual={L"たぶん",L"其他歌手",4,true};
     CHECK(describe_cloud(actual,tracks,1,tracks[1],true,false).pending);
+    CHECK(describe_cloud(actual,tracks,1,tracks[1],true,false).card.music_id==0);
     puts("PASS: actual/requested distinction, timeout, confirmation, NFC/NFD titles, pause state, natural next, foreign queue, missing SMTC, same-title artist guard");return 0;
 }

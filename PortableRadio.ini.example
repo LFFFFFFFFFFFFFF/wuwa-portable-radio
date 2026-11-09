@@ -21,3 +21,9 @@ Margin=24
 
 [Audio]
 SuppressBackgroundMusic=1
+
+[Lyrics]
+Enabled=1
+Translation=1
+; Positive values show lyrics earlier; negative values show them later.
+OffsetMs=0
